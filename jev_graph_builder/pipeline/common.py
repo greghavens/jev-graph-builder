@@ -29,6 +29,7 @@ from psycopg import AsyncConnection
 from jev_graph_builder import log
 from jev_graph_builder.config import Settings
 from jev_graph_builder.embed.base import EmbeddingProvider
+from jev_graph_builder.harness.base import HarnessUsageLimit
 from jev_graph_builder.harness.jobs import JobRunner
 from jev_graph_builder.ids import sha256_hex, unit_fraction
 from jev_graph_builder.jev.client import JevCreditsExhausted
@@ -43,7 +44,7 @@ Writer = Callable[[AsyncConnection], Awaitable[str]]
 
 
 # Conditions that stop the whole run (not one item): unfinished items are released, never failed.
-RUN_STOPS = (JevCreditsExhausted,)
+RUN_STOPS = (JevCreditsExhausted, HarnessUsageLimit)
 
 
 @dataclass(frozen=True)

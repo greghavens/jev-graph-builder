@@ -21,8 +21,9 @@ from typing import Any
 
 from jev_graph_builder.app import runtime
 from jev_graph_builder.config import Settings, write_config
+from jev_graph_builder.harness.base import HarnessUsageLimit
 from jev_graph_builder.jev.client import JevCreditsExhausted
-from jev_graph_builder.pipeline.common import Context, RunOptions, ensure_corpus, run_stage
+from jev_graph_builder.pipeline.common import RUN_STOPS, Context, RunOptions, ensure_corpus, run_stage
 from jev_graph_builder.registry import gate
 from jev_graph_builder.registry.gate import BOOTSTRAP_KIND
 from jev_graph_builder.registry.lint import lint_registry
@@ -36,6 +37,9 @@ BOOTSTRAP_STAGE = "bootstrap"
 Approver = Callable[[str, dict[str, Any]], bool]
 Progress = Callable[[str, dict[str, Any]], None]
 OpenContext = Callable[[Settings, str | None], AbstractAsyncContextManager[Context]]
+
+
+STOP_REASONS = {JevCreditsExhausted: "jev_credits_exhausted", HarnessUsageLimit: "harness_usage_limit"}
 
 
 @dataclass
@@ -81,9 +85,9 @@ class Builder:
         for phase, step in steps:
             try:
                 info = await self._with(step)
-            except JevCreditsExhausted as exc:
+            except RUN_STOPS as exc:
                 # Outside the stage runner (setup, S0): same stop, unfinished work stays pending.
-                self.report.stopped = {"reason": "jev_credits_exhausted", "phase": phase, "error": str(exc)}
+                self.report.stopped = {"reason": STOP_REASONS[type(exc)], "phase": phase, "error": str(exc)}
                 break
             self._record(phase, info)
             rounds = 0

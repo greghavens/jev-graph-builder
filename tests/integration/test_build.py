@@ -291,3 +291,47 @@ async def test_enrich_writes_each_batch_as_its_extraction_finishes(env: Harnesse
 
     enrich = {r["stage"]: r for r in report.phases["graph"]["stages"]}["enrich"]
     assert len(extract_jobs) > 1 and enrich["failed"] == 0 and enrich["done"] == len(extract_jobs), enrich
+
+
+async def test_enrich_fails_chunks_without_extraction_and_stops_on_a_usage_limit(
+        env: Harnessed, docs: list[Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A chunk whose extraction produced nothing fails (a re-run retries it) instead of being written
+    empty; the harness usage limit stops the run, and no further extraction job starts."""
+    from jev_graph_builder.harness.base import HarnessUsageLimit
+
+    monkeypatch.setenv(CONFIG_FILE_ENV, str(tmp_path / "jev-graph-builder.yaml"))
+    write_config(env.settings.model_dump(mode="json"))
+    src = [str(docs[0].parent)]
+    assert (await Builder(src, None, lambda _k, _s: True, "tester", open_ctx=_opener(env), stop_after="segment").run()).stopped
+
+    policy = Registry.policy
+    one = {"extract.batch_chunks", "run.concurrency.harness_jobs"}
+    monkeypatch.setattr(Registry, "policy", lambda self, key: 1 if key in one else policy(self, key))
+    run = env.harness.run
+    jobs: list[Path] = []
+
+    async def empty_then_limited(spec: Any) -> Any:
+        if env.harness.reg.prompt(spec.prompt_ref).name != "extract":
+            return await run(spec)
+        if spec.workspace not in jobs:
+            jobs.append(spec.workspace)
+        if spec.workspace != jobs[0]:
+            raise HarnessUsageLimit("five_hour usage limit, resets at 1790268600")
+        result = await run(spec)
+        (spec.workspace / spec.variables["output_file"]).unlink()
+        result.ok, result.error = False, "no output"
+        return result
+
+    monkeypatch.setattr(env.harness, "run", empty_then_limited)
+    report = await Builder(src, None, lambda _k, _s: True, "tester", open_ctx=_opener(env), stop_after="enrich").run()
+
+    assert report.stopped and "HarnessUsageLimit" in str(report.stopped), report.stopped
+    assert len(jobs) == 2  # the empty job, then the limited one; nothing after the limit
+    async with await psycopg.AsyncConnection.connect(env.settings.dsn) as conn:
+        cur = await conn.execute("SELECT status, last_error FROM work_items WHERE stage = 'enrich'")
+        rows = await cur.fetchall()
+        cur = await conn.execute("SELECT count(*) FROM chunks WHERE summary IS NOT NULL")
+        written = (await cur.fetchone())[0]
+    assert rows and not any(status == "done" for status, _ in rows), rows
+    assert sum(1 for _, err in rows if err and "ExtractionMissing" in err) == 1, rows
+    assert written == 0

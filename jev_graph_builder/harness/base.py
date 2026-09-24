@@ -38,6 +38,10 @@ class ForbiddenArgument(HarnessError):
     """R-021: a permission-bypass flag reached the argv builder."""
 
 
+class HarnessUsageLimit(HarnessError):
+    """The harness account hit its usage limit: every run fails until it resets, so the run stops."""
+
+
 @dataclass
 class RunSpec:
     prompt_ref: str

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from jev_graph_builder.harness.base import HarnessError, RunSpec
+from jev_graph_builder.harness.base import HarnessError, HarnessUsageLimit, RunSpec
 from jev_graph_builder.harness.claude import ClaudeCodeAdapter
 from jev_graph_builder.harness.codex import CodexAdapter
 from jev_graph_builder.registry.loader import Registry
@@ -121,6 +121,26 @@ async def test_claude_success_without_structured_output_fails(tmp_path: Path, re
     adapter = ClaudeCodeAdapter(reg, binary=str(_fake_cli(tmp_path, "claude", events)))
     result = await adapter.run(_spec(tmp_path, "cc_readonly"))
     assert not result.ok and "structured_output" in result.error
+
+
+async def test_claude_usage_limit_stops_the_run(tmp_path: Path, reg: Registry) -> None:
+    """The CLI's recorded stream when the plan's usage limit rejects a run: a rejected rate-limit event."""
+    events = [
+        CLAUDE_EVENTS[0],
+        {"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": 1790268600, "rateLimitType": "five_hour"},
+         "session_id": "SID"},
+        {"type": "result", "subtype": "success", "is_error": True, "session_id": "SID", "result": "You've hit your session limit"},
+    ]
+    adapter = ClaudeCodeAdapter(reg, binary=str(_fake_cli(tmp_path, "claude", events)))
+    with pytest.raises(HarnessUsageLimit, match="five_hour usage limit, resets at 2026-09-24T16:50:00"):
+        await adapter.run(_spec(tmp_path, "cc_readonly"))
+
+
+async def test_claude_rate_limit_warning_does_not_stop_the_run(tmp_path: Path, reg: Registry) -> None:
+    warning = {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed_warning", "rateLimitType": "five_hour"}, "session_id": "SID"}
+    adapter = ClaudeCodeAdapter(reg, binary=str(_fake_cli(tmp_path, "claude", [CLAUDE_EVENTS[0], warning, *CLAUDE_EVENTS[1:]])))
+    result = await adapter.run(_spec(tmp_path, "cc_readonly"))
+    assert result.ok, result.error
 
 
 async def test_forbidden_bypass_flags_are_refused(tmp_path: Path, reg: Registry) -> None:

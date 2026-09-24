@@ -25,7 +25,7 @@ from jev_graph_builder.ids import sha256_hex, short_key
 from jev_graph_builder.jev.gating import ACCEPT
 from jev_graph_builder.jev.service import AskResult, Decision
 from jev_graph_builder.ledger.ledger import DONE, WorkItem
-from jev_graph_builder.pipeline.common import Context, Deps, Stage, Writer, as_text, pending_in, write_decisions
+from jev_graph_builder.pipeline.common import RUN_STOPS, Context, Deps, Stage, Writer, as_text, pending_in, write_decisions
 from jev_graph_builder.pipeline.grounding import LOCATED, UNGROUNDED, Grounding, ground, line_of
 from jev_graph_builder.store import repo
 
@@ -35,7 +35,11 @@ QS_VERIFY, QS_VERIFY_FANOUT, QS_SUMMARY, QS_LOCATE = "extract_verify", "extract_
 QS_SUMMARY_FANOUT = "summary_verify_fanout"
 ENTITY, CLAIM = "entity", "claim"
 CACHE_KEY = "s3_records"
-READY_KEY, TASKS_KEY = "s3_ready", "s3_tasks"
+READY_KEY, TASKS_KEY, STOP_KEY = "s3_ready", "s3_tasks", "s3_stop"
+
+
+class ExtractionMissing(Exception):
+    """The extraction job produced no valid record for this chunk."""
 
 
 @dataclass
@@ -104,11 +108,14 @@ class EnrichStage(Stage):
         sem = asyncio.Semaphore(reg.policy("run.concurrency.harness_jobs"))
         cache: dict[str, tuple[dict[str, Any] | None, str, str]] = ctx.cache.setdefault(CACHE_KEY, {})
         ready: dict[str, asyncio.Future[None]] = ctx.cache.setdefault(READY_KEY, {})
+        stopped: list[BaseException] = ctx.cache.setdefault(STOP_KEY, [])
         loop = asyncio.get_running_loop()
 
         async def run(batch: list[WorkItem], group: list[WorkItem]) -> None:
             try:
                 async with sem:
+                    if stopped:
+                        raise stopped[0]  # the run is stopping: queued jobs do not start
                     records = [self._record(i.payload) for i in group]
                     profile = await ctx.jobs.choose_profile(JOB, {"records": [i.payload["text"] for i in batch]})
                     cap = reg.profile("harness", profile).get("max_batch_records") or len(records)
@@ -119,6 +126,8 @@ class EnrichStage(Stage):
                             cache[r["id"]] = (outcome.records.get(r["id"]), profile, outcome.missing.get(r["id"], ""))
                             ready[r["id"]].set_result(None)
             except BaseException as exc:
+                if isinstance(exc, RUN_STOPS) and not stopped:
+                    stopped.append(exc)
                 # The chunks still waiting on this job fail with its error (or stop with it).
                 for i in group:
                     f = ready[i.item_id]
@@ -135,6 +144,7 @@ class EnrichStage(Stage):
     async def cleanup(self, ctx: Context) -> None:
         """Stop the jobs no chunk will wait for any more (a stopped run) and settle their results."""
         tasks: list[asyncio.Task[None]] = ctx.cache.pop(TASKS_KEY, [])
+        ctx.cache.pop(STOP_KEY, None)
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -151,11 +161,11 @@ class EnrichStage(Stage):
         }.items() if v}
         return {"chunk": row["text"], "context": context or None, "task": ctx.reg.prompt(PROMPT).task}
 
-    async def _extract_one(self, ctx: Context, row: dict[str, Any]) -> dict[str, Any] | None:
+    async def _extract_one(self, ctx: Context, row: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
         """A chunk `prepare` did not cover (e.g. a resumed run) gets its own one-record job."""
         profile = await ctx.jobs.choose_profile(JOB, {"records": [row["text"]]})
         out = await ctx.jobs.run_job(JOB, PROMPT, [self._record(row)], profile, variables=self._vars(ctx), files=self._files(ctx))
-        return out.records.get(row["chunk_id"])
+        return out.records.get(row["chunk_id"]), out.missing.get(row["chunk_id"], "")
 
     # -------------------------------------------------------------- grounding
 
@@ -310,7 +320,13 @@ class EnrichStage(Stage):
         if ready is not None:
             await asyncio.shield(ready)  # this chunk's own extraction job, not the whole stage
         cached = ctx.cache.get(CACHE_KEY, {}).get(chunk_id)
-        record = cached[0] if cached else await self._extract_one(ctx, row)
+        if cached:
+            record, _, missing = cached
+        else:
+            record, missing = await self._extract_one(ctx, row)
+        if record is None:
+            # No extraction output is not "nothing to extract": the chunk fails and a re-run retries it.
+            raise ExtractionMissing(missing or "no valid record")
         results: list[AskResult] = []
         verified = await self._verify_all(ctx, row, record, results)
         summary = await self._summary(ctx, row, record, results)

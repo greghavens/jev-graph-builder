@@ -12,13 +12,25 @@ without `structured_output` is a failure when a schema was requested.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from jev_graph_builder.harness.base import EVENTS_FILE, HarnessBase, HarnessError, RunResult, RunSpec
+from jev_graph_builder.harness.base import EVENTS_FILE, HarnessBase, HarnessError, HarnessUsageLimit, RunResult, RunSpec
 
 RESULT_EVENT = "result"
 SUCCESS = "success"
+RATE_LIMIT_EVENT = "rate_limit_event"
+REJECTED = "rejected"
+
+
+def usage_limit(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The CLI's rate-limit event when the account's usage limit rejected the run."""
+    for e in events:
+        info = e.get("rate_limit_info") or {}
+        if e.get("type") == RATE_LIMIT_EVENT and info.get("status") == REJECTED:
+            return info
+    return None
 
 
 def session_dir(workspace: Path, session_id: str) -> Path:
@@ -75,6 +87,11 @@ class ClaudeCodeAdapter(HarnessBase):
             events_path=events_path,
             stdin=prompt if prompt is not None else self.render_prompt(spec),
         )
+        limit = usage_limit(out.events)
+        if limit is not None:
+            resets = limit.get("resetsAt")
+            when = datetime.fromtimestamp(resets, UTC).isoformat() if isinstance(resets, (int, float)) else "unknown"
+            raise HarnessUsageLimit(f"{limit.get('rateLimitType')} usage limit, resets at {when}")
         result = next((e for e in reversed(out.events) if e.get("type") == RESULT_EVENT), None)
         files = self.output_files(spec.workspace, before)
         if result is None:
