@@ -1,0 +1,14 @@
+name: span_locate
+version: 2
+jev_model: jev-1.13.0
+purpose: "S3 grounding: when an extracted span occurs several times in a chunk, choose the occurrence it refers to. v2: Jev sees the whole chunk, its context (document title, heading path, document metadata) and the extraction task."
+state_template:
+  chunk: {untrusted: true}
+  context: {untrusted: true, optional: true}
+  task: {}
+  span: {untrusted: true}
+questions:
+  line:
+    type: choice
+    instructions: "`chunk` is the whole chunk text. `context` is what the extractor also saw with it: the document title, the chunk's heading path and the document's metadata. `task` is the instruction the extractor followed. `span` occurs on several lines of `chunk`. On which line is it used with the meaning the extraction refers to?"
+    criteria: {$from_input: candidates}

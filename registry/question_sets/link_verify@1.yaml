@@ -1,0 +1,24 @@
+name: link_verify
+version: 1
+jev_model: jev-1.13.0
+purpose: "S6 second-stage check: does the proposed relation hold between the extracted entities and claims of the two chunks?"
+state_template:
+  relation: {fields: [name, definition]}
+  source: {fields: [entities, claims], max_tokens_ref: policies.link.state_tokens_per_chunk, untrusted: true}
+  target: {fields: [entities, claims], max_tokens_ref: policies.link.state_tokens_per_chunk, untrusted: true}
+questions:
+  holds:
+    type: noul
+    instructions: "The relationship described by `relation` holds from `source` to `target`, judged only from the entities and claims they contain."
+  grounded:
+    type: noul
+    instructions: "At least one claim in `source` or `target` directly supports the relationship described by `relation`."
+  useful:
+    type: noul
+    instructions: "A domain expert would find a link from `source` to `target`, labelled with `relation`, useful for navigating the documents or for answering questions about them."
+gating:
+  accept_when:
+    all:
+    - {q: holds, is: 'yes'}
+    - {q: grounded, is: 'yes'}
+    - {q: useful, is: 'yes'}

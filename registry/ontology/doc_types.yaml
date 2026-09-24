@@ -1,0 +1,8 @@
+items:
+  - {name: architecture, definition: "Describes how a system is structured: components, responsibilities and how they interact."}
+  - {name: design_doc, definition: "Proposes or records a design decision, with alternatives, trade-offs and the chosen approach."}
+  - {name: runbook, definition: "Step-by-step operational procedure for running, deploying or recovering a system."}
+  - {name: api_reference, definition: "Specifies an interface: endpoints, functions, parameters, types and return values."}
+  - {name: incident_review, definition: "Reports an incident after the fact: timeline, impact, root cause and follow-up actions."}
+  - {name: tutorial, definition: "Teaches a reader to accomplish a task by walking through an example."}
+  - {name: other, definition: "A technical document that fits none of the other types."}

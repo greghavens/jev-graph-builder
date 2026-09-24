@@ -1,0 +1,13 @@
+name: answerable
+version: 1
+jev_model: jev-1.13.0
+purpose: "Graph RAG: decide before answering whether the assembled passages can answer the query (§9.2); the harness never decides this."
+state_template:
+  query: {max_tokens_ref: policies.query.query_state_tokens, untrusted: true}
+  passages: {max_tokens_ref: policies.query.citation_state_tokens, untrusted: true}
+questions:
+  answerable:
+    type: noul
+    instructions: "`passages` contain the information needed to answer `query`, fully or in part."
+gating:
+  accept_when: {q: answerable, is: 'yes'}

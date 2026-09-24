@@ -1,0 +1,13 @@
+name: chrome_selector
+version: 1
+jev_model: jev-1.13.0
+purpose: "§8.2 / S0: an element whose text recurs across the bodies of the sampled HTML pages is removed at ingest (by a selector taken from the pages themselves) only if what it holds is page interface, not document text. Nothing site-specific is named in code."
+state_template:
+  corpus: {fields: [scope]}
+  element: {fields: [selector, texts], max_tokens_ref: policies.bootstrap.chrome.state_tokens, untrusted: true}
+questions:
+  interface_only:
+    type: noul
+    instructions: "Every text in `element` belongs to the page's interface or site navigation, such as icon names, buttons, menus, ratings, feedback prompts or share and print links, and none of it is text of the document itself."
+gating:
+  accept_when: {q: interface_only, is: 'yes'}

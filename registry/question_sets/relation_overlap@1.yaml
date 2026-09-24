@@ -1,0 +1,13 @@
+name: relation_overlap
+version: 1
+jev_model: jev-1.13.0
+purpose: "§8.1 step 4: two relation types overlap when one chunk pair could satisfy both. Accept means they overlap."
+state_template:
+  relation_a: {fields: [name, definition]}
+  relation_b: {fields: [name, definition]}
+questions:
+  overlap:
+    type: noul
+    instructions: "The definitions in `relation_a` and `relation_b` overlap so much that one pair of passages could satisfy both."
+gating:
+  accept_when: {q: overlap, is: 'yes'}

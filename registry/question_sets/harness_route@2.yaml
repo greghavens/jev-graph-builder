@@ -1,0 +1,12 @@
+name: harness_route
+version: 2
+jev_model: jev-1.13.0
+purpose: "R-100: choose the harness profile for a job from the job's task and a sample of its records. The chosen profile runs as chosen. Only profiles at the job's autonomy level are offered."
+state_template:
+  job: {}
+  records: {max_tokens_ref: policies.harness.route_state_tokens, untrusted: true}
+questions:
+  profile:
+    type: choice
+    instructions: "Which model is best suited to carry out `job.task` correctly on records like `records`? `job.task` is the full instruction the model is given; its output is then checked item by item."
+    criteria: {$from_input: profiles}

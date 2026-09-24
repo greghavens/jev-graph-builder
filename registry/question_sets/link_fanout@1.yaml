@@ -1,0 +1,42 @@
+name: link_fanout
+version: 1
+jev_model: jev-1.13.0
+purpose: "S6 anchor fan-out packing of `link`: one anchor chunk against several candidates per call. Used only when R-111 allows it."
+state_template:
+  anchor: {fields: [title_path, meta, summary, text], max_tokens_ref: policies.link.state_tokens_per_chunk, untrusted: true}
+fanout:
+  over: candidates
+  max_ref: policies.link.fanout_per_call
+  item_fields: [title_path, meta, summary, text, shared_entities]
+  item_max_tokens_ref: policies.link.state_tokens_per_candidate
+  untrusted: true
+questions:
+  related:
+    type: noul
+    fanout: true
+    instructions: "{{ item }} contains information that a reader of `anchor` would need or benefit from to fully understand or verify `anchor`."
+  relation:
+    type: choice
+    fanout: true
+    instructions: "Which relationship best describes how {{ item }} relates to `anchor`?"
+    criteria: {$from_ontology: relation_types, add: {none: "No meaningful relationship.", other: "A meaningful relationship not described by any other option."}}
+  direction:
+    type: choice
+    fanout: true
+    instructions: "For the relationship between `anchor` and {{ item }} chosen above, which one is the source, as defined by the relationship's direction semantics?"
+    criteria: {a_to_b: "`anchor` is the source.", b_to_a: "The candidate is the source.", symmetric: "The relationship has no direction."}
+  strength:
+    type: score
+    fanout: true
+    instructions: "How strongly are `anchor` and {{ item }} connected?"
+    criteria: ["Only superficially similar wording", "Same topic, different facts", "Directly related facts", "One depends on the other to be understood"]
+  contradiction:
+    type: noul
+    fanout: true
+    instructions: "`anchor` and {{ item }} make statements that cannot both be true."
+gating:
+  accept_when:
+    all:
+    - {q: related, is: 'yes'}
+    - q: relation
+      not_in: [none, other]

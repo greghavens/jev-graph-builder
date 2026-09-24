@@ -1,0 +1,79 @@
+{
+  "request": {
+    "state": {
+      "passage": {
+        "text": "Version 2.4 of the database engine adds HNSW indexes and fixes a WAL replay bug."
+      }
+    },
+    "model": "jev-1.13.0",
+    "questions": {
+      "k1": {
+        "type": "noul",
+        "instructions": "Is `passage.text` about a software release?",
+        "criteria": {
+          "true": "The passage announces or describes a software release.",
+          "false": "It does not."
+        }
+      },
+      "k2": {
+        "type": "choice",
+        "instructions": "Which language is `passage.text` written in?",
+        "criteria": {
+          "en": "English",
+          "de": "German"
+        }
+      },
+      "k3": {
+        "type": "score",
+        "instructions": "How technical is `passage.text`?",
+        "criteria": [
+          "not technical",
+          "somewhat technical",
+          "highly technical"
+        ]
+      }
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json",
+    "x-typesafe-request-id": "req_01a0cc695d867ceca922d35eeb171d1a"
+  },
+  "response": {
+    "model": "jev-1.13.0",
+    "answers": {
+      "k1": {
+        "type": "noul",
+        "noul": 0.97
+      },
+      "k2": {
+        "type": "choice",
+        "choice": "en",
+        "confidence": 1.0,
+        "probabilities": {
+          "en": 1.0,
+          "de": 0.0
+        }
+      },
+      "k3": {
+        "type": "score",
+        "score": 1.89,
+        "confidence": 0.84,
+        "legend": {
+          "0": "not technical",
+          "1": "somewhat technical",
+          "2": "highly technical"
+        },
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.11,
+          "2": 0.89
+        }
+      }
+    },
+    "usage": {
+      "input_tokens": 439,
+      "output_tokens": 64
+    }
+  }
+}

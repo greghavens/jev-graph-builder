@@ -1,0 +1,49 @@
+name: extract_verify
+version: 2
+jev_model: jev-1.13.0
+purpose: "S3 (P3): verify one harness-extracted entity or claim against its chunk: P(wrong) per field, a type re-check and, for claims, support by the chunk. Only accepted items enter the graph. v2: Jev sees the whole chunk, its context (document title, heading path, document metadata) and the extraction task."
+state_template:
+  chunk: {untrusted: true}
+  context: {untrusted: true, optional: true}
+  task: {}
+  item: {untrusted: true}
+questions:
+  name_wrong:
+    type: noul
+    instructions: "`chunk` is the whole chunk text. `context` is what the extractor also saw with it: the document title, the chunk's heading path and the document's metadata. `task` is the instruction the extractor followed. `item.name` is wrong: `chunk` uses a different name for the thing, or the thing is absent from `chunk`."
+  span_wrong:
+    type: noul
+    instructions: "`chunk` is the whole chunk text. `context` is what the extractor also saw with it: the document title, the chunk's heading path and the document's metadata. `task` is the instruction the extractor followed. `item.span` is wrong: that text of `chunk` refers to something other than the thing `item.name` names."
+  attributes_wrong:
+    type: noul
+    instructions: "`chunk` is the whole chunk text. `context` is what the extractor also saw with it: the document title, the chunk's heading path and the document's metadata. `task` is the instruction the extractor followed. At least one value in `item.attributes` is wrong: it misstates what `chunk` says about the thing `item.name` names."
+  text_wrong:
+    type: noul
+    instructions: "`chunk` is the whole chunk text. `context` is what the extractor also saw with it: the document title, the chunk's heading path and the document's metadata. `task` is the instruction the extractor followed. `item.text` is wrong: it states something that `chunk` contradicts or leaves out."
+  evidence_wrong:
+    type: noul
+    instructions: "`chunk` is the whole chunk text. `context` is what the extractor also saw with it: the document title, the chunk's heading path and the document's metadata. `task` is the instruction the extractor followed. `item.evidence_span` is wrong: that text of `chunk` is about something other than what `item.text` states."
+  type_wrong:
+    type: noul
+    instructions: "`chunk` is the whole chunk text. `context` is what the extractor also saw with it: the document title, the chunk's heading path and the document's metadata. `task` is the instruction the extractor followed. The type that `item` gives (`item.type` or `item.claim_type`) is wrong for what `item` names or states, as it is used in `chunk`."
+  type_check:
+    type: choice
+    instructions: "`chunk` is the whole chunk text. `context` is what the extractor also saw with it: the document title, the chunk's heading path and the document's metadata. `task` is the instruction the extractor followed. Which type best describes the thing `item` names or states, as it is used in `chunk`?"
+    criteria: {$from_input: types}
+  supported:
+    type: noul
+    instructions: "`chunk` is the whole chunk text. `context` is what the extractor also saw with it: the document title, the chunk's heading path and the document's metadata. `task` is the instruction the extractor followed. Everything `item.text` states is supported by `chunk`."
+  self_contained:
+    type: noul
+    instructions: "`chunk` is the whole chunk text. `context` is what the extractor also saw with it: the document title, the chunk's heading path and the document's metadata. `task` is the instruction the extractor followed. `item` can be understood correctly by a reader who has not seen `chunk`: it names its subject instead of using pronouns or references such as \"this service\"."
+gating:
+  accept_when:
+    all:
+    - {q: name_wrong, if_asked: true, is: 'no'}
+    - {q: span_wrong, if_asked: true, is: 'no'}
+    - {q: attributes_wrong, if_asked: true, is: 'no'}
+    - {q: text_wrong, if_asked: true, is: 'no'}
+    - {q: evidence_wrong, if_asked: true, is: 'no'}
+    - {q: type_wrong, is: 'no'}
+    - {q: supported, if_asked: true, is: 'yes'}
+    - {q: self_contained, if_asked: true, is: 'yes'}

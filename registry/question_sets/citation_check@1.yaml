@@ -1,0 +1,17 @@
+name: citation_check
+version: 1
+jev_model: jev-1.13.0
+purpose: "Query time and S7/S8: every generated sentence must be supported by the passages it cites; unsupported sentences are dropped (P3)."
+state_template:
+  sentence: {untrusted: true}
+  passages: {max_tokens_ref: policies.query.citation_state_tokens, untrusted: true}
+questions:
+  verdict:
+    type: choice
+    instructions: "How do `passages` relate to what `sentence` states?"
+    criteria:
+      supports: "`passages` state or directly show everything `sentence` states."
+      contradicts: "`passages` state something that is incompatible with `sentence`."
+      says_nothing: "`passages` neither state what `sentence` states nor anything incompatible with it."
+gating:
+  accept_when: {q: verdict, eq: supports}

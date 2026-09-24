@@ -1,0 +1,388 @@
+# Registry policies (§7). Every threshold, size and switch the code uses lives here (P1, R-002).
+# The code has no defaults: a missing key is an error, never a silent fallback.
+
+question_sets:
+  active:
+    answerable: 1
+    audit_edge: 1
+    audit_orphan: 1
+    canonical_name: 1
+    chunk_classify: 1
+    chunk_check_fanout: 1
+    citation_check: 1
+    chrome_selector: 1
+    dedup: 1
+    doc_triage: 1
+    entity_align: 1
+    expand_gate: 1
+    extract_verify: 2
+    extract_verify_fanout: 2
+    harness_route: 2
+    injection: 1
+    link: 1
+    link_fanout: 1
+    link_verify: 1
+    lint_question: 1
+    metadata_applies: 1
+    metadata_derivable: 1
+    metadata_field: 1
+    ontology_support: 1
+    query_route: 1
+    rag_passage: 1
+    relation_overlap: 1
+    relation_support: 1
+    segment: 1
+    segment_fanout: 1
+    span_locate: 2
+    summary_verify: 2
+    summary_verify_fanout: 2
+    train_instruction: 1
+    train_multihop: 1
+    train_negative: 1
+    train_qa: 1
+
+prompts:
+  active:
+    answer: 1
+    author_question_set: 1
+    bootstrap_registry: 1
+    community_summary: 1
+    continue_job: 1
+    disambiguate_relations: 1
+    extract: 1
+    gen_graph_reasoning: 1
+    gen_instruction: 1
+    gen_qa_multihop: 1
+    gen_qa_single: 1
+    propose_relations: 1
+    repair_output: 1
+
+# ---------------------------------------------------------------- Jev
+jev:
+  limits_profile: typesafe
+  untrusted_field: data             # untrusted text is wrapped under this key (§11.4)
+  default_truncation: head_tail
+  store_state: true                 # keep the sent state in jev_calls for audit and drift
+  retry:
+    max_retries: 6
+    backoff_initial_s: 0.5
+    backoff_max_s: 30
+    backoff_jitter: 0.25
+    http_statuses: [408, 409, 425, 429, 500, 502, 503, 504, 529]
+    total_timeout_s: 300
+  limiter:
+    backoff_factor: 0.7
+    floor_fraction: 0.1
+    recover_after_s: 30
+    recover_factor: 1.1
+
+
+# ---------------------------------------------------------------- gating (§11.5)
+gating:
+  threshold: 0.5    # a Noul answer counts when Jev's probability for it is above this
+  backoff: 0.5      # a repeat on the same subject keeps this share of the remaining distance to 1: 0.5, 0.75, 0.875
+
+lint:
+  # Whole words, matched case-insensitively against `criteria.true` (§7.4: phrase criteria positively).
+  negation_markers: ["not", "no", "never", "without", "neither", "nor", "none", "isn't", "aren't", "doesn't", "don't", "didn't", "cannot", "can't", "won't", "wasn't", "weren't"]
+
+qs_authoring:
+  max_rounds: 3
+  sample_states: 5
+  sample_passages: 5
+
+# ------------------------------------------------------------ run control
+run:
+  ledger: {lease_seconds: 900, heartbeat_seconds: 60, max_attempts: 3}   # heartbeat well inside the lease
+  progress_every: 100   # a stage_progress log line after every this many finished items
+  concurrency:
+    bootstrap: 1
+    ingest: 8
+    segment: 16
+    enrich: 16
+    embed: 4
+    entities: 32
+    links: 32
+    audit: 16
+    training: 16
+    training_derived: 16
+    harness_jobs: 4
+    citation_check: 16
+    ontology_checks: 16
+    search: 16
+
+plan:
+  # Used until a stage has observed history; then observed averages replace them (§18).
+  estimates:
+    bootstrap: {jev_calls_per_item: 60, tokens_per_call: 3000, harness_seconds_per_item: 600}
+    ingest: {jev_calls_per_item: 1, tokens_per_call: 1500, harness_seconds_per_item: 0}
+    segment: {jev_calls_per_item: 4, tokens_per_call: 2500, harness_seconds_per_item: 0}
+    enrich: {jev_calls_per_item: 14, tokens_per_call: 1800, harness_seconds_per_item: 20}
+    embed: {jev_calls_per_item: 0, tokens_per_call: 0, harness_seconds_per_item: 0}
+    entities: {jev_calls_per_item: 1, tokens_per_call: 1200, harness_seconds_per_item: 0}
+    links: {jev_calls_per_item: 2, tokens_per_call: 3500, harness_seconds_per_item: 0.5}
+    audit: {jev_calls_per_item: 1, tokens_per_call: 2500, harness_seconds_per_item: 2}
+    training: {jev_calls_per_item: 3, tokens_per_call: 2500, harness_seconds_per_item: 10}
+    training_derived: {jev_calls_per_item: 8, tokens_per_call: 1500, harness_seconds_per_item: 0}
+
+status:
+  alerts_shown: 20
+
+store:
+  pool: {min_size: 2, max_size: 20}
+  hnsw: {m: 16, ef_construction: 200}
+  # kNN queries take `k × ann_overfetch` rows, then re-sort by (distance, id) and keep k.
+  ann_overfetch: 4
+  # Pipeline candidate generation (S5, S6). `exact` is reproducible across runs and
+  # resumes (acceptance 2); `hnsw` is faster on very large corpora but can pick different
+  # neighbours when vectors tie. See jev_graph_builder/store/knn.py.
+  candidate_knn: {mode: exact, ef_search: 100}
+
+# ---------------------------------------------------------------- harness
+harness:
+  binaries: {claude_code: claude, codex: codex}
+  plugins: {}
+  # Only these variables reach a harness process; everything else (incl. CLAUDE*/CODEX* session vars) is dropped.
+  env_allowlist: [PATH, HOME, LANG, LC_ALL, TMPDIR, TERM, USER, XDG_CONFIG_HOME, XDG_CACHE_HOME]
+  # Bypass flags are refused outright (§9.3).
+  forbidden_args:
+    - --dangerously-skip-permissions
+    - --allow-dangerously-skip-permissions
+    - --dangerously-bypass-approvals-and-sandbox
+    - --yolo
+    - bypassPermissions
+    - danger-full-access
+  caps: {max_turns: 80}
+  # Largest single event line read from a harness's JSON stream (a final result carries the whole
+  # structured output, which easily exceeds asyncio's 64 KiB default).
+  max_event_bytes: 67108864
+  codex_approval_policy: never
+  job_attempts: 3
+  continue_message_ref: continue_job
+  repair_message_ref: repair_output
+  route_question: profile
+  route_state_tokens: 1500
+  route_sample_chars: 1200
+  pinned: {}
+  defaults:
+    extract: cc_batch
+    qa_single: cc_batch
+    instruction: cc_batch
+    qa_multihop: cc_batch_strong
+    graph_reasoning: cc_batch
+    bootstrap_registry: cc_readonly_strong
+    disambiguate_relations: cc_readonly_strong
+    propose_relations: cc_readonly_strong
+    community_summary: cc_readonly
+    answer: cc_readonly
+    author_question_set: cc_readonly_strong
+
+# --------------------------------------------------------------- pipeline
+bootstrap:
+  sample:
+    per_stratum: 3
+    max_documents: 40
+    size_buckets: [4000, 40000, 400000]
+    units_per_document: 12
+    max_passage_chars: 2000
+  max_disambiguation_rounds: 2
+  passage_state_tokens: 600
+  # Relation evidence is judged per cited (source, target) pair (QS.relation_support).
+  pair_passage_tokens: 500
+  relation_pairs_per_call: 8
+  metadata_values: 12              # distinct sample values of a metadata key shown to Jev
+  # Corpus page chrome (ingest.html.strip_selectors): an element inside the page body whose exact text recurs
+  # on at least `min_pages` sampled HTML pages is a candidate; Jev judges each from the texts it holds.
+  chrome: {min_pages: 3, max_candidates: 30, texts_shown: 12, text_chars: 200, state_tokens: 800}
+
+ingest:
+  ocr: {enabled: true, dpi: 300, language: eng}
+  html:                             # HTML -> Markdown (generic; no site-specific rules)
+    strip_tags: [script, style, noscript, template, svg, iframe, nav, header, footer, aside, form, button]
+    # Page chrome particular to this corpus (CSS selectors): S0 finds elements whose text recurs across the
+    # sampled pages' bodies, Jev keeps those that hold only interface text, the human approves at gate 1.
+    strip_selectors: []
+    main_selectors: [main, "[role=main]", article]   # first match is the page body; else <body>
+    drop_tags: [img]                  # converted to nothing (their alt text is not document text)
+  sentence_language: en
+  language_fallback: other          # a detected language the ontology `languages` does not list
+  triage_headings: 20
+  triage_state_tokens: 2500
+  # Document metadata keys (front matter) carried onto every chunk and into Jev's chunk states, e.g. the
+  # release a page documents. S0 drafts the list from the sample, Jev checks each key, the human approves.
+  metadata_fields: []
+  # A document without a `metadata_fields` key gets the values its text applies to (S2,
+  # QS.metadata_applies); candidates are the distinct values other documents carry.
+  applies_state_tokens: 3000
+  applies_values_per_call: 16
+  # Jev first decides per key whether its values are shared categories (QS.metadata_derivable);
+  # it is shown this many values spread evenly across the sorted distinct values.
+  derivable_values_shown: 24
+
+segment:
+  window_units: 12
+  gaps_per_call: 8
+  chunks_per_call: 8                # chunk_check_fanout: a document's chunks per call
+  max_unit_tokens: 400
+  max_fraction: 1.0                 # chunk size cap as a fraction of the embedding window
+  jev_state_share: 0.5
+  packing: fanout                   # fanout | single (§11.3)
+  heading_separator: " > "
+  window_state_tokens: 3000
+  side_state_tokens: 400
+  chunk_state_tokens: 1500
+
+extract:
+  batch_chunks: 50
+  ontology_file: ontology.json
+  verify_concurrency: 8
+  packing: fanout                   # fanout | single: a chunk's entities, claims or summary pieces per call
+  fanout_per_call: 8
+  # Which extract_verify questions each kind is asked (§8.4 step 3: P(wrong) per field, type re-check,
+  # support for claims only). `attributes_question` is asked only when the entity has attributes.
+  questions:
+    entity: [name_wrong, span_wrong, attributes_wrong, type_wrong, type_check]
+    claim: [text_wrong, evidence_wrong, type_wrong, type_check, supported, self_contained]
+  attributes_question: attributes_wrong
+
+grounding:
+  fuzzy_threshold: 90
+  char_folds: {"‘": "'", "’": "'", "“": "\"", "”": "\"", "–": "-", "—": "-", " ": " "}
+  ungrounded_outcome: reject
+
+embed:
+  batch_size: 64
+  templates:
+    chunk: "{% if heading_path %}{{ heading_path | join(' > ') }}\n{% endif %}{% if title %}{{ title }}\n{% endif %}{{ text }}"
+    entity: "{{ name }} ({{ type }}){% if description %}: {{ description }}{% endif %}"
+    claim: "{{ text }}"
+
+entity:
+  candidates:
+    ann_k: 10
+    name_key: 50
+    cooccurrence_per_doc: 20
+    cooccurrence_min_name_similarity: 60
+  normalization: {casefold: true, strip_punctuation: true, drop_tokens: [the, a, an], aliases: {}}
+  context_snippets: 3
+  context_chars: 300
+  state_tokens_per_entity: 600
+  same_question: same_referent
+
+link:
+  candidates:
+    ann_k: 12
+    ann_exclude_same_doc: false
+    fts_k: 6
+    shared_entity_k: 8
+    structural_enabled: true
+    structural_section_pairs: 4
+  packing: anchor_fanout            # anchor_fanout | pair
+  fanout_per_call: 8
+  pair_concurrency: 16
+  state_tokens_per_chunk: 1200
+  state_tokens_per_candidate: 500
+  related_question: related
+  relation_question: relation
+  direction_question: direction
+  strength_question: strength
+  contradiction_question: contradiction
+  contradiction_relation: contradicts
+  weights: {p_related: 0.4, strength: 0.3, relation_confidence: 0.2, verify_holds: 0.1}
+
+ontology:
+  other_label: other
+  none_label: none
+  # Evolution runs when Jev's `other` picks are a statistically significant excess over `other_baseline_share`
+  # of its S6 link picks (`none` excluded) not yet examined: one-sided binomial test at `significance`.
+  other_baseline_share: 0.15
+  significance: 0.05
+  # A proposed type is kept when Jev's yes rate over its cited pairs is significantly above this share
+  # (same test and level): a recurring kind of link, not a few one-offs.
+  support_baseline_share: 0.5
+  evolution_examples: 200           # `other` pairs shown to the harness (edge_id order)
+  max_evolution_rounds: 2           # graph re-runs per build after Jev activates new relation types
+
+audit:
+  hub_percentile: 99
+  hub_min_degree: 30
+  related_doc_types: [[runbook, architecture], [incident_review, runbook], [design_doc, architecture], [api_reference, tutorial]]
+  demoted_status: review
+  drift: {sample_size: 50, flip_boundary: 0.5, min_compared: 20, max_std: 0.08, max_flip_rate: 0.05}
+  communities:
+    resolution: 1.0
+    seed: 7
+    iterations: 10
+    min_size: 4
+    weight_decimals: 3
+    timeout_s: 120
+    level: 0
+    max_members_in_prompt: 30
+    max_failed_fraction: 0.2
+  verification_question_sets: [extract_verify, extract_verify_fanout, summary_verify, summary_verify_fanout, link_verify, citation_check, train_qa, train_instruction, train_multihop]
+  edge_requirements:
+    chunk: [[link, link_fanout], [link_verify]]
+  # §3 P3: harness output that is accepted must carry an accepting verification decision.
+  p3_rules:
+    - {name: mentions_verified, table: mentions, id: mention_id, decisions_column: decision_ids, when: "true", question_sets: [extract_verify, extract_verify_fanout],
+       subject_kind: mention, corpus_join: "JOIN chunks c ON c.chunk_id = t.chunk_id", corpus_filter: "c.corpus_id = %(corpus)s"}
+    - {name: claims_verified, table: claims, id: claim_id, decisions_column: decision_ids, when: "true", question_sets: [extract_verify, extract_verify_fanout],
+       subject_kind: claim, corpus_join: "JOIN chunks c ON c.chunk_id = t.chunk_id", corpus_filter: "c.corpus_id = %(corpus)s"}
+    - {name: chunk_summaries_verified, table: chunks, id: chunk_id, decisions_column: summary_decision_ids, when: "t.summary IS NOT NULL AND t.summary <> ''",
+       question_sets: [summary_verify, summary_verify_fanout], subject_kind: chunk, corpus_filter: "t.corpus_id = %(corpus)s"}
+    - {name: community_summaries_verified, table: communities, id: community_id, decisions_column: decision_ids, when: "t.summary IS NOT NULL AND t.summary <> ''",
+       question_sets: [citation_check], subject_kind: community, corpus_filter: "t.corpus_id = %(corpus)s"}
+    - {name: training_examples_verified, table: training_examples, id: example_id, decisions_column: decision_ids, when: "t.harness_run_id IS NOT NULL",
+       question_sets: [train_qa, train_instruction, train_multihop, citation_check], subject_kind: training_example,
+       corpus_filter: "true"}
+
+training:
+  quotas: {qa_single: 2000, instruction: 1000, qa_multihop: 500, graph_reasoning: 500, triples: 100000, retrieval_pairs: 2000, rerank_soft_labels: 2000}
+  stratify_by: [doc_type, role]
+  multihop: {min_hops: 2, max_hops: 3, max_expansions: 20000}
+  derive_from: [qa_single, instruction]
+  answer_state_tokens: 1500
+  multihop_state_tokens: 800
+  dedup: {ann_k: 5, min_similarity: 0.95}
+  splits:
+    by: component                   # component | document
+    fractions: {train: 0.9, validation: 0.05, test: 0.05}
+  retrieval: {negative_candidates: 20, max_negatives: 3}
+  rerank: {candidates: 10}
+
+# ------------------------------------------------------------------ query
+search:
+  k: 10
+  k_ann: 50
+  k_fts: 50
+  rrf_k: 60
+  ef_search: 100
+  rerank_candidates: 30
+  relevance_question: relevant
+  injection_question: injection
+  contradiction_question: contradicts
+  # Each candidate is checked for contradiction against the texts of this many other top candidates (by RRF).
+  contradiction_peers: 3
+  peer_state_tokens: 1500
+  weights: {relevant: 0.5, direct_evidence: 0.4, contradicts: -0.1}
+
+query:
+  intent_question: intent
+  complexity_question: complexity
+  fallback_intent: lookup
+  query_state_tokens: 300
+  citation_state_tokens: 2500
+  citation_prefix: p
+  max_failed_fraction: 0.3
+  on_citation_fail: regenerate      # regenerate | drop
+
+# Keyed by query intent. `by_complexity` overrides the plan by the most probable `query_route`
+# complexity level (0-based). `answer_profile` pins the answer harness; absent, QS.harness_route picks it (R-100).
+retrieval_plans:
+  lookup: {k_seeds: 5, max_hops: 0, max_neighbors: 0, relations: [], use_communities: false,
+           by_complexity: {2: {k_seeds: 8, max_hops: 1, max_neighbors: 4, relations: [elaborates, depends_on]}}}
+  multi_hop: {k_seeds: 5, max_hops: 2, max_neighbors: 6, relations: [elaborates, depends_on, procedure_for, causes, example_of], use_communities: false,
+              by_complexity: {2: {k_seeds: 8, max_hops: 3, max_neighbors: 8}}}
+  compare: {k_seeds: 8, max_hops: 1, max_neighbors: 4, relations: [same_subject, contradicts, supersedes], use_communities: false}
+  global_summary: {k_seeds: 10, max_hops: 1, max_neighbors: 4, relations: [same_subject, elaborates], use_communities: true}
+  out_of_scope: {k_seeds: 0, max_hops: 0, max_neighbors: 0, relations: [], use_communities: false, out_of_scope: true}

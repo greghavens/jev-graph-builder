@@ -1,0 +1,6 @@
+name: qa_single
+description: "One question answerable from one chunk, with the evidence span quoted from it."
+kind: qa_single
+prompt: gen_qa_single
+fields: {prompt: question, answer: answer}
+question_sets: {filter: train_qa}

@@ -1,0 +1,56 @@
+name: train_instruction
+version: 1
+jev_model: jev-1.13.0
+purpose: "S8 filter for the instruction template (§8.9): the qa_single filters plus an instruction-clarity Score. The citation check runs separately."
+state_template:
+  prompt: {untrusted: true}
+  answer: {max_tokens_ref: policies.training.answer_state_tokens, untrusted: true}
+  chunk: {max_tokens_ref: policies.segment.chunk_state_tokens, untrusted: true}
+questions:
+  answerable:
+    type: noul
+    instructions: "`chunk` contains the information needed to answer `prompt`."
+  answer_supported:
+    type: noul
+    instructions: "Everything `answer` states is supported by `chunk`."
+  answers_prompt:
+    type: noul
+    instructions: "`answer` fully and directly responds to `prompt`."
+  self_contained:
+    type: noul
+    instructions: "`prompt` can be understood without seeing `chunk`: it names its subject instead of referring to \"the text\", \"this document\" or \"the passage\"."
+  quality:
+    type: score
+    instructions: "How useful is the pair of `prompt` and `answer` as a training example for a model that must learn the knowledge in `chunk`?"
+    criteria:
+      - "Useless: trivial, vague, or about formatting rather than content"
+      - "Weak: correct but generic, or about a minor detail"
+      - "Good: a clear question about a specific fact, answered precisely"
+      - "Excellent: a clear, realistic question about important knowledge, answered precisely and completely"
+  leaks_answer:
+    type: noul
+    instructions: "`prompt` itself states or gives away the information that `answer` provides."
+  contains_pii:
+    type: noul
+    instructions: "`prompt` or `answer` contains personal information about a private individual, such as a home address, a personal phone number, a personal email address, or an identification or account number."
+  clarity:
+    type: score
+    instructions: "How clearly does `prompt` state what the response must do?"
+    criteria:
+      - "Unclear: the task cannot be worked out from `prompt`"
+      - "Vague: the task can be guessed, but several different responses would fit"
+      - "Clear: the task is stated, with minor ambiguity"
+      - "Precise: the task and what a complete response contains are fully stated"
+gating:
+  accept_when:
+    all:
+    - {q: answerable, is: 'yes'}
+    - {q: answer_supported, is: 'yes'}
+    - {q: answers_prompt, is: 'yes'}
+    - {q: self_contained, is: 'yes'}
+    - q: quality
+      level_in: [2, 3]
+    - {q: leaks_answer, is: 'no'}
+    - {q: contains_pii, is: 'no'}
+    - q: clarity
+      level_in: [2, 3]

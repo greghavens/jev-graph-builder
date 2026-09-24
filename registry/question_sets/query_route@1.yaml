@@ -1,0 +1,18 @@
+name: query_route
+version: 1
+jev_model: jev-1.13.0
+purpose: "Query time: classify the query intent and its complexity, which together select a retrieval plan from policies.retrieval_plans."
+state_template:
+  query: {max_tokens_ref: policies.query.query_state_tokens, untrusted: true}
+questions:
+  intent:
+    type: choice
+    instructions: "What kind of question is `query`?"
+    criteria: {$from_ontology: query_intents}
+  complexity:
+    type: score
+    instructions: "How much work does answering `query` take?"
+    criteria:
+      - "One fact stated in one place"
+      - "A few facts from one or two places"
+      - "Facts from several places that must be connected or compared"

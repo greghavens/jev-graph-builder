@@ -1,0 +1,6 @@
+name: instruction
+description: "An instruction a user of the documented system might give, with a response grounded in one chunk."
+kind: instruction
+prompt: gen_instruction
+fields: {prompt: instruction, answer: response}
+question_sets: {filter: train_instruction}

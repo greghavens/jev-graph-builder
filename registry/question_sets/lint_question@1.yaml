@@ -1,0 +1,12 @@
+name: lint_question
+version: 1
+jev_model: jev-1.13.0
+purpose: "§7.4 Registry lint: flag a Jev question that asks for counting, arithmetic or date comparison, which code must do instead. Accept means flagged."
+state_template:
+  question: {}
+questions:
+  forbidden_task:
+    type: noul
+    instructions: "`question` can only be answered by tallying items, calculating with numbers, or putting numbers or dates in order."
+gating:
+  accept_when: {q: forbidden_task, is: 'yes'}

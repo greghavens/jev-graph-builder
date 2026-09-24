@@ -1,0 +1,12 @@
+name: audit_orphan
+version: 1
+jev_model: jev-1.13.0
+purpose: "S7: an accepted chunk with no semantic edge. Accept means it should be connected, so its link candidates are re-run."
+state_template:
+  chunk: {fields: [title, meta, summary, text], max_tokens_ref: policies.link.state_tokens_per_chunk, untrusted: true}
+questions:
+  should_connect:
+    type: noul
+    instructions: "`chunk` contains substantive information about a subject that other documents of a technical documentation corpus are likely to discuss too."
+gating:
+  accept_when: {q: should_connect, is: 'yes'}

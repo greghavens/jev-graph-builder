@@ -1,0 +1,5 @@
+name: retrieval_pairs
+description: "Query → positive chunks from accepted QA examples, plus hard negatives that Jev rejects as answers."
+kind: retrieval_pairs
+prompt: null
+question_sets: {negative: train_negative}

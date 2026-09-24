@@ -1,0 +1,10 @@
+items:
+  - {name: storage, definition: "Databases, files, caches, replication, backups and data retention."}
+  - {name: networking, definition: "Service communication, protocols, load balancing, DNS and network configuration."}
+  - {name: security, definition: "Authentication, authorization, secrets, encryption, auditing and vulnerabilities."}
+  - {name: deployment, definition: "Building, releasing, rolling out, configuring and rolling back software."}
+  - {name: observability, definition: "Logging, metrics, tracing, alerting and dashboards."}
+  - {name: reliability, definition: "Availability, failover, capacity, incidents and recovery."}
+  - {name: api_design, definition: "Interface contracts, versioning, request and response formats and errors."}
+  - {name: data_processing, definition: "Pipelines, batch and stream jobs, queues and data transformations."}
+  - {name: general, definition: "Any other technical subject."}

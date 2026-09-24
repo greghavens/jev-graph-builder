@@ -1,0 +1,9 @@
+items:
+  - {name: overview, definition: "Introduces or summarizes the subject of the document or section."}
+  - {name: explanation, definition: "Explains how or why something works."}
+  - {name: procedure, definition: "Gives ordered steps the reader performs."}
+  - {name: reference, definition: "Lists facts to look up: parameters, options, fields, limits or values."}
+  - {name: example, definition: "Shows a concrete example, sample or code listing."}
+  - {name: decision, definition: "States a decision, its rationale or the alternatives that were considered."}
+  - {name: warning, definition: "Warns about a risk, pitfall, limitation or known issue."}
+  - {name: navigation, definition: "Table of contents, links, headers, footers or other navigation text with no content of its own."}

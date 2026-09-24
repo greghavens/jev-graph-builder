@@ -1,0 +1,5 @@
+name: graph_reasoning
+description: "A question about how two chunks are related, answered by explaining the accepted relation between them."
+kind: graph_reasoning
+prompt: gen_graph_reasoning
+question_sets: {}

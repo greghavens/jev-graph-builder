@@ -1,0 +1,27 @@
+name: chunk_classify
+version: 1
+jev_model: jev-1.13.0
+purpose: "S2: role, topic, information density and boilerplate flag of an accepted chunk."
+state_template:
+  chunk: {max_tokens_ref: policies.segment.chunk_state_tokens, untrusted: true}
+  heading_path: {}
+questions:
+  role:
+    type: choice
+    instructions: "What role does `chunk` play in its document?"
+    criteria: {$from_ontology: chunk_roles}
+  topic:
+    type: choice
+    instructions: "What is the main subject of `chunk`?"
+    criteria: {$from_ontology: topics}
+  density:
+    type: score
+    instructions: "How much specific, reusable information does `chunk` contain?"
+    criteria:
+      - "None: navigation, boilerplate or filler"
+      - "Little: general statements a reader would already know"
+      - "Some: a few specific facts, names or steps"
+      - "Much: many specific facts, names, values or steps"
+  boilerplate:
+    type: noul
+    instructions: "`chunk` is repeated template text such as a header, footer, licence notice, table of contents or navigation, rather than content of the document."

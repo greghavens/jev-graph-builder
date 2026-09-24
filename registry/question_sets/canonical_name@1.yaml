@@ -1,0 +1,12 @@
+name: canonical_name
+version: 1
+jev_model: jev-1.13.0
+purpose: "S5: choose the canonical name of a merged entity cluster from the forms seen in the corpus."
+state_template:
+  entity_type: {}
+  forms: {untrusted: true}
+questions:
+  canonical:
+    type: choice
+    instructions: "Which form is the most complete and standard name for the `entity_type` that all of `forms` refer to?"
+    criteria: {$from_input: forms}

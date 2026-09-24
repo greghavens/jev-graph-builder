@@ -1,0 +1,19 @@
+name: relation_support
+version: 1
+jev_model: jev-1.13.0
+purpose: "§8.1 step 4 / §8.7.4: a drafted relation type must be shown by the passage pairs it cites, each read as the source and target ends of one link, the way S6 will judge links."
+state_template:
+  definition: {fields: [name, definition, direction_semantics]}
+fanout:
+  over: pairs
+  max_ref: policies.bootstrap.relation_pairs_per_call
+  item_fields: [source, target]
+  item_max_tokens_ref: policies.bootstrap.pair_passage_tokens
+  untrusted: true
+questions:
+  shows_relation:
+    type: noul
+    fanout: true
+    instructions: "In {{ item }}, what its source passage describes is connected to what its target passage describes in the way `definition` says, with the source passage at the end that `definition` calls the source."
+gating:
+  accept_when: {q: shows_relation, is: 'yes'}

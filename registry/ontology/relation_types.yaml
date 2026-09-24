@@ -1,0 +1,31 @@
+items:
+  - name: elaborates
+    definition: "The target gives more detail about something the source introduces."
+    direction: directed
+    direction_semantics: "source introduces, target elaborates"
+  - name: depends_on
+    definition: "The source describes something that needs, calls or is built on what the target describes."
+    direction: directed
+    direction_semantics: "source depends on target"
+  - name: procedure_for
+    definition: "The source gives steps for carrying out or operating what the target describes."
+    direction: directed
+    direction_semantics: "source is the procedure, target is the subject"
+  - name: example_of
+    definition: "The source is a concrete example or instance of what the target describes in general."
+    direction: directed
+    direction_semantics: "source is the example, target is the general description"
+  - name: causes
+    definition: "The source describes an event or condition that led to the one the target describes."
+    direction: directed
+    direction_semantics: "source is the cause, target is the effect"
+  - name: supersedes
+    definition: "The source replaces or updates the information, design or procedure in the target."
+    direction: directed
+    direction_semantics: "source is newer and replaces target"
+  - name: same_subject
+    definition: "Both describe the same component, concept or event from different angles, without one depending on the other."
+    direction: symmetric
+  - name: contradicts
+    definition: "The two make statements about the same thing that cannot both be true."
+    direction: symmetric

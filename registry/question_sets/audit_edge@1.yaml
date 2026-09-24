@@ -1,0 +1,14 @@
+name: audit_edge
+version: 1
+jev_model: jev-1.13.0
+purpose: "S7: re-check an accepted edge flagged by a graph anomaly (hub, contradiction, asymmetry, cross-document-type). Reject demotes it."
+state_template:
+  relation: {fields: [name, definition]}
+  source: {fields: [title, meta, summary, text], max_tokens_ref: policies.link.state_tokens_per_chunk, untrusted: true}
+  target: {fields: [title, meta, summary, text], max_tokens_ref: policies.link.state_tokens_per_chunk, untrusted: true}
+questions:
+  holds:
+    type: noul
+    instructions: "The relationship described by `relation` holds from `source` to `target`."
+gating:
+  accept_when: {q: holds, is: 'yes'}

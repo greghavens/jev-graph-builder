@@ -1,0 +1,39 @@
+# R-002 hard-coding lint configuration (§19). Every exception is listed here.
+max_string_length: 25
+
+# Numeric literals fail in the decision paths.
+numeric_paths: [pipeline/, jev/gating.py, query/]
+# Structural identities only (empty / first element / complement / sign); every
+# threshold, size or weight comes from the Registry.
+allowed_numbers: [0, 1, -1]
+
+# String literals in these contexts are not domain content.
+contexts:
+  - sql          # SQL statements (matched by sql_pattern)
+  - log          # structured-log event keys and fields
+  - raise        # exception messages (raise, exception constructors, message_calls)
+  - diagnostic   # lint / validation messages appended to errors / warnings lists
+  - identifier   # registry keys, reason codes, schema field names (identifier_pattern)
+  - regex        # re.compile patterns (file-name formats)
+  - help         # CLI help text
+  - docstring
+sql_pattern: '^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|ALTER|DROP|GRANT|DO|SET|ON CONFLICT|FROM|WHERE|AND|OR|ORDER|GROUP|JOIN|LEFT JOIN|LIMIT|RETURNING|VALUES)\b|%s|%\(\w+\)s'
+identifier_pattern: '[a-z0-9_]+([./:][a-z0-9_{}]+)*'
+message_calls: [_fail]
+message_sinks: [errors, warnings, reasons]
+log_methods: [debug, info, warning, error, exception, bind]
+
+# Modules whose literals are schema field names / wire formats, not domain text.
+modules:
+  - registry/schemas.py        # JSON Schema definitions of Registry files
+  - store/migrations/          # rendered SQL
+
+# Individually reviewed literals: wire formats and operational messages, not domain content.
+literals:
+  - postgresql://localhost/jev_graph_builder                              # config default DSN
+  - "postgresql://@127.0.0.1:/"                                           # managed-container DSN format
+  - application/vnd.openxmlformats-officedocument.wordprocessingml.document  # DOCX media type
+  - "no result event (exit ): "                                           # harness failure text
+  - success without structured_output
+  - "final message is not JSON: "
+  - no valid extraction                                                   # review reason detail

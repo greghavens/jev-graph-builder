@@ -1,0 +1,5 @@
+name: qa_multihop
+description: "A question that needs every chunk on a path of accepted edges; each hop must be necessary."
+kind: qa_multihop
+prompt: gen_qa_multihop
+question_sets: {necessity: train_multihop}

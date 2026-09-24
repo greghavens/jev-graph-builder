@@ -1,0 +1,19 @@
+name: metadata_derivable
+version: 1
+jev_model: jev-1.13.0
+purpose: "S2 (§8.1): before documents that lack a `metadata_fields` key are given values from their text, Jev decides whether that key's values are shared categories a text can name, or identifiers particular to single documents."
+state_template:
+  corpus: {fields: [scope]}
+  field: {fields: [name, distinct_values, values], untrusted: true}
+questions:
+  shared_category:
+    type: noul
+    instructions: "`field.values` (a spread of the `field.distinct_values` values documents in `corpus` carry) name categories that many documents share, such as the releases or products a document covers, so a document's text can say which of them it applies to."
+  per_document:
+    type: noul
+    instructions: "`field.values` identify or describe one document each, such as its title, heading, date or address."
+gating:
+  accept_when:
+    all:
+    - {q: shared_category, is: 'yes'}
+    - {q: per_document, is: 'no'}

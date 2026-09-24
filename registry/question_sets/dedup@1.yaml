@@ -1,0 +1,13 @@
+name: dedup
+version: 1
+jev_model: jev-1.13.0
+purpose: "S8: two embedding-similar training prompts are duplicates when they ask for the same thing. Accept means duplicate."
+state_template:
+  question_a: {untrusted: true}
+  question_b: {untrusted: true}
+questions:
+  same_question:
+    type: noul
+    instructions: "`question_a` and `question_b` ask for the same information, so one correct answer would answer both."
+gating:
+  accept_when: {q: same_question, is: 'yes'}

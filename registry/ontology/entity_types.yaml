@@ -1,0 +1,9 @@
+items:
+  - {name: service, definition: "A deployable software component that runs and serves other components or users."}
+  - {name: library, definition: "A reusable code package, framework or SDK that is linked into other software."}
+  - {name: datastore, definition: "A database, cache, queue, bucket or other system that stores data."}
+  - {name: api, definition: "A named interface, endpoint, RPC method or function that other code calls."}
+  - {name: config_setting, definition: "A named configuration option, flag, environment variable or parameter."}
+  - {name: team, definition: "A group of people that owns or operates something."}
+  - {name: concept, definition: "A named technical idea, algorithm, protocol or pattern."}
+  - {name: incident, definition: "A specific named or dated outage or failure event."}

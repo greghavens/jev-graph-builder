@@ -1,0 +1,6 @@
+# Labels for structural edges created by code (§8.7.2). Role → label.
+next: NEXT
+part_of: PART_OF
+in_section: IN_SECTION
+mentions: MENTIONS
+duplicate_of: DUPLICATE_OF

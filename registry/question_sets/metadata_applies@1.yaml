@@ -1,0 +1,20 @@
+name: metadata_applies
+version: 1
+jev_model: jev-1.13.0
+purpose: "S2 (§8.1): a document that does not carry a `metadata_fields` key in its own metadata gets the values of that key its text applies to. Candidate values are the ones other documents in the corpus carry; none are named in code."
+state_template:
+  corpus: {fields: [scope]}
+  field: {fields: [name]}
+  document: {fields: [title, text], max_tokens_ref: policies.ingest.applies_state_tokens, untrusted: true}
+fanout:
+  over: values
+  max_ref: policies.ingest.applies_values_per_call
+  item_fields: [value]
+  untrusted: true
+questions:
+  applies:
+    type: noul
+    fanout: true
+    instructions: "What `document` states holds for the subject of `corpus` when its `field` is {{ item }}, either because `document` names {{ item }} or a range or family that includes {{ item }}, or because it describes the subject in a way that is true for {{ item }}."
+gating:
+  accept_when: {q: applies, is: 'yes'}

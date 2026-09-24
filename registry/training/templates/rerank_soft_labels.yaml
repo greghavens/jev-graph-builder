@@ -1,0 +1,5 @@
+name: rerank_soft_labels
+description: "Query → nearby chunks with Jev's answer probability as a soft relevance label."
+kind: rerank_soft_labels
+prompt: null
+question_sets: {relevance: rag_passage}

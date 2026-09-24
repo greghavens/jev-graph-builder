@@ -1,0 +1,15 @@
+name: expand_gate
+version: 1
+jev_model: jev-1.13.0
+purpose: "Graph RAG: follow an edge to a neighbour only when the neighbour helps answer the query."
+state_template:
+  query: {max_tokens_ref: policies.query.query_state_tokens, untrusted: true}
+  from_chunk: {fields: [title, summary], untrusted: true}
+  relation: {fields: [name, definition]}
+  neighbor: {fields: [title, text], max_tokens_ref: policies.segment.chunk_state_tokens, untrusted: true}
+questions:
+  helps:
+    type: noul
+    instructions: "`neighbor`, reached from `from_chunk` through the relationship described by `relation`, contains information needed to answer `query`."
+gating:
+  accept_when: {q: helps, is: 'yes'}

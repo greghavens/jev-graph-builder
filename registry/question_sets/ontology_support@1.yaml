@@ -1,0 +1,13 @@
+name: ontology_support
+version: 1
+jev_model: jev-1.13.0
+purpose: "§8.1 step 4 / §8.7.4: an ontology definition drafted by the harness must be supported by the sample passages it cites."
+state_template:
+  definition: {fields: [kind, name, definition]}
+  passages: {max_tokens_ref: policies.bootstrap.passage_state_tokens, untrusted: true}
+questions:
+  supported:
+    type: noul
+    instructions: "`passages` contain examples of what `definition` describes, and `definition` describes them accurately."
+gating:
+  accept_when: {q: supported, is: 'yes'}

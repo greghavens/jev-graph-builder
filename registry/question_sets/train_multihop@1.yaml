@@ -1,0 +1,14 @@
+name: train_multihop
+version: 1
+jev_model: jev-1.13.0
+purpose: "S8 necessity check for qa_multihop: asked once per hop with that hop's passage removed. Accept (answerable without it) makes the example fail, because a true multi-hop question needs every hop."
+state_template:
+  question: {untrusted: true}
+  answer: {max_tokens_ref: policies.training.answer_state_tokens, untrusted: true}
+  passages: {max_tokens_ref: policies.training.multihop_state_tokens, untrusted: true}
+questions:
+  answerable:
+    type: noul
+    instructions: "`passages` contain everything needed to arrive at `answer` for `question`."
+gating:
+  accept_when: {q: answerable, is: 'yes'}

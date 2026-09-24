@@ -1,0 +1,61 @@
+name: extract_verify_fanout
+version: 2
+jev_model: jev-1.13.0
+purpose: "S3 (P3) fan-out packing of `extract_verify`: every harness-extracted entity (or every claim) of one chunk verified in one call, each item gated on its own answers. Used when `policies.extract.packing` is fanout. v2: Jev sees the whole chunk, its context (document title, heading path, document metadata) and the extraction task."
+state_template:
+  chunk: {untrusted: true}
+  context: {untrusted: true, optional: true}
+  task: {}
+fanout:
+  over: items
+  max_ref: policies.extract.fanout_per_call
+  untrusted: true
+questions:
+  name_wrong:
+    type: noul
+    fanout: true
+    instructions: "`chunk` is the whole chunk text. `context` is what the extractor also saw with it: the document title, the chunk's heading path and the document's metadata. `task` is the instruction the extractor followed. The name of {{ item }} is wrong: `chunk` uses a different name for the thing, or the thing is absent from `chunk`."
+  span_wrong:
+    type: noul
+    fanout: true
+    instructions: "`chunk` is the whole chunk text. `context` is what the extractor also saw with it: the document title, the chunk's heading path and the document's metadata. `task` is the instruction the extractor followed. The span of {{ item }} is wrong: that text of `chunk` refers to something other than the thing its name names."
+  attributes_wrong:
+    type: noul
+    fanout: true
+    instructions: "`chunk` is the whole chunk text. `context` is what the extractor also saw with it: the document title, the chunk's heading path and the document's metadata. `task` is the instruction the extractor followed. At least one value in the attributes of {{ item }} is wrong: it misstates what `chunk` says about the thing its name names."
+  text_wrong:
+    type: noul
+    fanout: true
+    instructions: "`chunk` is the whole chunk text. `context` is what the extractor also saw with it: the document title, the chunk's heading path and the document's metadata. `task` is the instruction the extractor followed. The text of {{ item }} is wrong: it states something that `chunk` contradicts or leaves out."
+  evidence_wrong:
+    type: noul
+    fanout: true
+    instructions: "`chunk` is the whole chunk text. `context` is what the extractor also saw with it: the document title, the chunk's heading path and the document's metadata. `task` is the instruction the extractor followed. The evidence_span of {{ item }} is wrong: that text of `chunk` is about something other than what its text states."
+  type_wrong:
+    type: noul
+    fanout: true
+    instructions: "`chunk` is the whole chunk text. `context` is what the extractor also saw with it: the document title, the chunk's heading path and the document's metadata. `task` is the instruction the extractor followed. The type that {{ item }} gives (its type or claim_type) is wrong for what it names or states, as it is used in `chunk`."
+  type_check:
+    type: choice
+    fanout: true
+    instructions: "`chunk` is the whole chunk text. `context` is what the extractor also saw with it: the document title, the chunk's heading path and the document's metadata. `task` is the instruction the extractor followed. Which type best describes the thing {{ item }} names or states, as it is used in `chunk`?"
+    criteria: {$from_input: types}
+  supported:
+    type: noul
+    fanout: true
+    instructions: "`chunk` is the whole chunk text. `context` is what the extractor also saw with it: the document title, the chunk's heading path and the document's metadata. `task` is the instruction the extractor followed. Everything the text of {{ item }} states is supported by `chunk`."
+  self_contained:
+    type: noul
+    fanout: true
+    instructions: "`chunk` is the whole chunk text. `context` is what the extractor also saw with it: the document title, the chunk's heading path and the document's metadata. `task` is the instruction the extractor followed. {{ item }} can be understood correctly by a reader who has not seen `chunk`: it names its subject instead of using pronouns or references such as \"this service\"."
+gating:
+  accept_when:
+    all:
+    - {q: name_wrong, if_asked: true, is: 'no'}
+    - {q: span_wrong, if_asked: true, is: 'no'}
+    - {q: attributes_wrong, if_asked: true, is: 'no'}
+    - {q: text_wrong, if_asked: true, is: 'no'}
+    - {q: evidence_wrong, if_asked: true, is: 'no'}
+    - {q: type_wrong, is: 'no'}
+    - {q: supported, if_asked: true, is: 'yes'}
+    - {q: self_contained, if_asked: true, is: 'yes'}

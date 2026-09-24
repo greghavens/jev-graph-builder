@@ -1,0 +1,6 @@
+items:
+  - {name: lookup, definition: "Asks for one fact that a single passage can answer."}
+  - {name: multi_hop, definition: "Needs facts from several connected passages combined to answer."}
+  - {name: compare, definition: "Asks how two or more things differ or are alike."}
+  - {name: global_summary, definition: "Asks for an overview of a whole area or theme across many documents."}
+  - {name: out_of_scope, definition: "Asks about something the corpus does not cover."}

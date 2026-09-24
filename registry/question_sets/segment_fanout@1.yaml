@@ -1,0 +1,21 @@
+name: segment_fanout
+version: 1
+jev_model: jev-1.13.0
+purpose: "S2 fan-out packing of `segment`: several gaps of one window per call. Used only when R-111 allows it."
+state_template:
+  units: {max_tokens_ref: policies.segment.window_state_tokens, untrusted: true}
+fanout:
+  over: gaps
+  max_ref: policies.segment.gaps_per_call
+  item_fields: [before, after, heading_changed]
+questions:
+  same_topic_continues:
+    type: noul
+    fanout: true
+    instructions: 'For {{ item }}: the unit in `units` that the gap names as "after" continues the same topic as the unit it names as "before".'
+  after_depends_on_before:
+    type: noul
+    fanout: true
+    instructions: 'For {{ item }}: a reader of the gap''s "after" unit in `units` would need its "before" unit to understand it.'
+gating:
+  accept_when: {any: [{q: same_topic_continues, is: 'yes'}, {q: after_depends_on_before, is: 'yes'}]}

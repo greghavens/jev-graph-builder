@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "question_set_draft",
+  "type": "object",
+  "required": [
+    "question_set"
+  ],
+  "properties": {
+    "question_set": {
+      "type": "object",
+      "required": [
+        "purpose",
+        "state_template",
+        "questions",
+        "gating"
+      ]
+    }
+  },
+  "additionalProperties": false
+}

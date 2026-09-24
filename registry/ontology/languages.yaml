@@ -1,0 +1,8 @@
+items:
+  - {name: en, definition: "English."}
+  - {name: de, definition: "German."}
+  - {name: fr, definition: "French."}
+  - {name: es, definition: "Spanish."}
+  - {name: ja, definition: "Japanese."}
+  - {name: zh, definition: "Chinese."}
+  - {name: other, definition: "Any other language, or no natural language at all."}

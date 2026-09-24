@@ -1,0 +1,33 @@
+name: link
+version: 1
+jev_model: jev-1.13.0
+purpose: "S6 (§7.2): decide whether and how a candidate chunk pair is related."
+state_template:
+  chunk_a: {fields: [title_path, meta, summary, text], max_tokens_ref: policies.link.state_tokens_per_chunk, untrusted: true}
+  chunk_b: {fields: [title_path, meta, summary, text], max_tokens_ref: policies.link.state_tokens_per_chunk, untrusted: true}
+  shared_entities: {source: computed.shared_entities}
+questions:
+  related:
+    type: noul
+    instructions: "`chunk_b` contains information that a reader of `chunk_a` would need or benefit from to fully understand or verify `chunk_a`."
+  relation:
+    type: choice
+    instructions: "Which relationship best describes how `chunk_b` relates to `chunk_a`?"
+    criteria: {$from_ontology: relation_types, add: {none: "No meaningful relationship.", other: "A meaningful relationship not described by any other option."}}
+  direction:
+    type: choice
+    instructions: "Which chunk is the source of the relationship chosen above, as defined by the relationship's direction semantics?"
+    criteria: {a_to_b: "`chunk_a` is the source.", b_to_a: "`chunk_b` is the source.", symmetric: "The relationship has no direction."}
+  strength:
+    type: score
+    instructions: "How strongly are the two chunks connected?"
+    criteria: ["Only superficially similar wording", "Same topic, different facts", "Directly related facts", "One depends on the other to be understood"]
+  contradiction:
+    type: noul
+    instructions: "`chunk_a` and `chunk_b` make statements that cannot both be true."
+gating:
+  accept_when:
+    all:
+    - {q: related, is: 'yes'}
+    - q: relation
+      not_in: [none, other]

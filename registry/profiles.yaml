@@ -1,0 +1,185 @@
+# Profiles (§7.1): Jev endpoints, harness tiers and embedding models.
+# Secrets are never stored here — only the names of the environment variables
+# that hold them.
+
+jev:
+  typesafe:
+    kind: typesafe
+    endpoint: https://api.typesafe.ai
+    model: jev-1.13.0                 # pinned; `GET /v1/models` lists only aliases, POSTs accept the pin
+    key_env: TYPESAFE_API_KEY
+    context_tokens: 64000
+    longest_question_tokens: 32000
+    limits: {choice_max_options: 255, score_min_levels: 2, score_max_levels: 10}
+    rate: {requests_per_minute: 1200, tokens_per_second: 250000}
+    chars_per_token: 4
+    timeout_s: 60
+
+harness:
+  # Batch jobs: read input.jsonl, write output.jsonl inside the workspace. No shell, no network tools.
+  cc_haiku:
+    harness: claude_code
+    autonomy: workspace_write
+    description: "Claude Haiku 4.5: fastest and most cost-effective model for simple tasks; fits high-volume work with checkable outputs, not long agentic loops."
+    model: claude-haiku-4-5
+    permission_mode: acceptEdits
+    allowed_tools: [Read, Write, Edit, Glob, Grep]
+    disallowed_tools: [Bash, WebFetch, WebSearch, Task]
+    max_turns: 40
+    max_batch_records: 25
+    context_tokens: 150000
+    timeout_s: 1800
+    secret_env: []
+    twins: {codex: codex_luna}
+  cc_batch:
+    harness: claude_code
+    autonomy: workspace_write
+    description: "Claude Sonnet 5: the best combination of speed and intelligence in the Sonnet tier; near-Opus quality on coding and agentic work."
+    model: claude-sonnet-5
+    permission_mode: acceptEdits
+    allowed_tools: [Read, Write, Edit, Glob, Grep]
+    disallowed_tools: [Bash, WebFetch, WebSearch, Task]
+    max_turns: 40
+    max_batch_records: 25
+    context_tokens: 150000
+    timeout_s: 1800
+    secret_env: []
+    twins: {codex: codex_batch}
+  cc_batch_strong:
+    harness: claude_code
+    autonomy: workspace_write
+    description: "Claude Opus 5.5: for long-running agentic coding and knowledge work."
+    model: claude-opus-5-5
+    permission_mode: acceptEdits
+    allowed_tools: [Read, Write, Edit, Glob, Grep]
+    disallowed_tools: [Bash, WebFetch, WebSearch, Task]
+    max_turns: 60
+    max_batch_records: 10
+    context_tokens: 150000
+    timeout_s: 2700
+    secret_env: []
+    twins: {codex: codex_batch_strong}
+  # Single structured answers: headless, tool-less, read-only (§9.2 step 5).
+  cc_readonly:
+    harness: claude_code
+    autonomy: read_only
+    description: "Claude Code (Sonnet), tool-less, one structured answer from the prompt alone."
+    model: claude-sonnet-5
+    permission_mode: plan
+    allowed_tools: []
+    max_turns: 3
+    context_tokens: 150000
+    timeout_s: 600
+    secret_env: []
+    twins: {codex: codex_readonly}
+  cc_readonly_strong:
+    harness: claude_code
+    autonomy: read_only
+    description: "Claude Code (Opus), tool-less, for hard synthesis such as Registry drafts and multi-hop answers."
+    model: claude-opus-5-5
+    permission_mode: plan
+    allowed_tools: []
+    max_turns: 3
+    context_tokens: 150000
+    timeout_s: 900
+    secret_env: []
+    twins: {codex: codex_readonly_strong}
+  codex_luna:
+    harness: codex
+    autonomy: workspace_write
+    description: "GPT-6 Luna: fast and affordable model for easier tasks."
+    model: gpt-6-luna
+    reasoning_effort: medium
+    sandbox: workspace-write
+    max_batch_records: 25
+    context_tokens: 150000
+    timeout_s: 1800
+    secret_env: []
+    twins: {claude_code: cc_haiku}
+  codex_batch:
+    harness: codex
+    autonomy: workspace_write
+    description: "GPT-6 Sol: workhorse model for coding and everyday work."
+    model: gpt-6-sol
+    reasoning_effort: medium
+    sandbox: workspace-write
+    max_batch_records: 25
+    context_tokens: 150000
+    timeout_s: 1800
+    secret_env: []
+    twins: {claude_code: cc_batch}
+  codex_batch_strong:
+    harness: codex
+    autonomy: workspace_write
+    description: "GPT-6 Astra: frontier intelligence for the most demanding work."
+    model: gpt-6-astra
+    reasoning_effort: medium
+    sandbox: workspace-write
+    max_batch_records: 10
+    context_tokens: 150000
+    timeout_s: 2700
+    secret_env: []
+    twins: {claude_code: cc_batch_strong}
+  codex_readonly:
+    harness: codex
+    autonomy: read_only
+    description: "Codex, read-only sandbox, one structured answer from the prompt alone."
+    model: gpt-6-astra
+    reasoning_effort: medium
+    sandbox: read-only
+    context_tokens: 150000
+    timeout_s: 600
+    secret_env: []
+    twins: {claude_code: cc_readonly}
+  codex_readonly_strong:
+    harness: codex
+    autonomy: read_only
+    description: "Codex with high reasoning effort, read-only, for hard synthesis."
+    model: gpt-6-astra
+    reasoning_effort: high
+    sandbox: read-only
+    context_tokens: 150000
+    timeout_s: 900
+    secret_env: []
+    twins: {claude_code: cc_readonly_strong}
+
+embedding:
+  local:
+    kind: sentence_transformers
+    model_id: sentence-transformers/all-MiniLM-L6-v2
+    dim: 384
+    max_tokens: 256
+    batch_size: 64
+    normalize: true
+    device: cpu
+  openai_compatible:
+    kind: openai_compatible
+    endpoint: https://api.openai.com/v1/embeddings
+    key_env: OPENAI_API_KEY
+    model_id: text-embedding-3-small
+    dim: 1536
+    max_tokens: 8191
+    batch_size: 128
+    send_dimensions: false
+    timeout_s: 60
+  # Deterministic, offline; used by tests and dry runs.
+  hashing:
+    kind: hashing
+    model_id: hashing-v1
+    dim: 64
+    max_tokens: 512
+
+# Local Postgres that `build` starts when no DSN was given (--db or the config file).
+# Bound to 127.0.0.1 only, trust auth, data kept in a named volume across runs.
+postgres:
+  local:
+    image: docker.io/pgvector/pgvector:pg16
+    container: jev-graph-builder-pg
+    volume: jev-graph-builder-pgdata
+    database: jev_graph_builder
+    user: postgres
+    data_dir: /var/lib/postgresql/data
+    # Image contract: trust auth is safe only because the port is bound to 127.0.0.1.
+    env: {POSTGRES_HOST_AUTH_METHOD: trust, POSTGRES_USER: postgres, POSTGRES_DB: jev_graph_builder}
+    runtimes: [podman, docker]
+    ready_timeout_s: 60

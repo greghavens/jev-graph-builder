@@ -1,0 +1,5 @@
+name: triples
+description: "Accepted edges and claims exported as triples; already verified upstream, so no harness step."
+kind: triples
+prompt: null
+question_sets: {}

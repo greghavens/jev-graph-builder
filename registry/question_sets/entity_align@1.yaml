@@ -1,0 +1,28 @@
+name: entity_align
+version: 1
+jev_model: jev-1.13.0
+purpose: "S5: decide whether two extracted entities are the same real-world thing (merge), distinct but related (candidate edge), or unrelated."
+state_template:
+  entity_a: {fields: [name, type, description, contexts], max_tokens_ref: policies.entity.state_tokens_per_entity, untrusted: true}
+  entity_b: {fields: [name, type, description, contexts], max_tokens_ref: policies.entity.state_tokens_per_entity, untrusted: true}
+questions:
+  alignment:
+    type: score
+    instructions: "How are `entity_a` and `entity_b` connected?"
+    criteria:
+      - "Different: different things with no direct connection"
+      - "Related: different things that are closely associated, such as a service and its datastore"
+      - "Same: the same thing under different names"
+  same_referent:
+    type: noul
+    instructions: "`entity_a` and `entity_b` refer to the same real-world thing, possibly under different names or spellings."
+  type_compatible:
+    type: noul
+    instructions: "One real-world thing could be described by both the type of `entity_a` and the type of `entity_b`."
+gating:
+  accept_when:
+    all:
+    - q: alignment
+      level_in: [2]
+    - {q: same_referent, is: 'yes'}
+    - {q: type_compatible, is: 'yes'}

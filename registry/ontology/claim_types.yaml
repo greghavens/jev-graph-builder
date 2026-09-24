@@ -1,0 +1,7 @@
+items:
+  - {name: behavior, definition: "States what a system does, or how it responds under some condition."}
+  - {name: requirement, definition: "States something that must, should or must not be done."}
+  - {name: limit, definition: "States a bound, quota, size, timeout or other constraint."}
+  - {name: dependency, definition: "States that one thing needs, uses or calls another."}
+  - {name: cause, definition: "States that one event or condition caused another."}
+  - {name: ownership, definition: "States who owns, maintains or is responsible for something."}

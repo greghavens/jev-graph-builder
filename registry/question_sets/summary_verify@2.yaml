@@ -1,0 +1,19 @@
+name: summary_verify
+version: 2
+jev_model: jev-1.13.0
+purpose: "S3 (P3): keep a summary sentence, title or keyword only when the chunk supports it (citation check). v2: Jev sees the whole chunk, its context (document title, heading path, document metadata) and the extraction task."
+state_template:
+  chunk: {untrusted: true}
+  context: {untrusted: true, optional: true}
+  task: {}
+  sentence: {untrusted: true}
+questions:
+  verdict:
+    type: choice
+    instructions: "`chunk` is the whole chunk text. `context` is what the extractor also saw with it: the document title, the chunk's heading path and the document's metadata. `task` is the instruction the extractor followed. How does `chunk` relate to what `sentence` states? `sentence` may be a summary sentence, a title or a keyword for `chunk`."
+    criteria:
+      supports: "`chunk` states or directly shows everything `sentence` states, so `sentence` accurately describes `chunk`."
+      contradicts: "`chunk` states something that is incompatible with `sentence`."
+      says_nothing: "`chunk` neither states what `sentence` states nor anything incompatible with it."
+gating:
+  accept_when: {q: verdict, eq: supports}

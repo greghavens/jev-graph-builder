@@ -1,0 +1,19 @@
+name: metadata_field
+version: 1
+jev_model: jev-1.13.0
+purpose: "§8.1: a document metadata key the harness proposes to carry onto every chunk must tell documents in the corpus apart in a way that changes what their content means."
+state_template:
+  corpus: {fields: [scope]}
+  field: {fields: [name, values], untrusted: true}
+questions:
+  distinguishes:
+    type: noul
+    instructions: "Two documents with different `field.values` can make different statements about the same thing, and a reader needs `field` to know which statement applies, for the subject described in `corpus`."
+  file_handling:
+    type: noul
+    instructions: "`field` only records how a file was stored, split, fetched or processed."
+gating:
+  accept_when:
+    all:
+    - {q: distinguishes, is: 'yes'}
+    - {q: file_handling, is: 'no'}

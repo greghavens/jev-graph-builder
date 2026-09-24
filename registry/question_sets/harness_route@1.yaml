@@ -1,0 +1,19 @@
+name: harness_route
+version: 1
+jev_model: jev-1.13.0
+purpose: "R-100: choose the harness profile for a job from a sample of its records, and its model tier from the batch complexity (§8.4 step 5). Code refuses a choice at a different autonomy level than the job's default."
+state_template:
+  job: {}
+  records: {max_tokens_ref: policies.harness.route_state_tokens, untrusted: true}
+questions:
+  profile:
+    type: choice
+    instructions: "Which harness profile is best suited to carry out the `job` on records like `records`?"
+    criteria: {$from_profiles: harness}
+  complexity:
+    type: score
+    instructions: "How hard is it to carry out the `job` correctly on records like `records`?"
+    criteria:
+      - "Routine: short, well-structured records with plainly stated facts"
+      - "Moderate: longer records or some facts that need careful reading"
+      - "Hard: dense, ambiguous or highly technical records where details are easy to get wrong"
