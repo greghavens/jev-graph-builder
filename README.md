@@ -1,63 +1,92 @@
 # jev-graph-builder
 
-Builds a verified, vector-searchable knowledge graph (PostgreSQL + pgvector) from a document corpus.
+Turns a folder of documents into a searchable knowledge graph in PostgreSQL (pgvector). A coding agent (Claude Code or Codex) drafts the text: extractions, summaries, an ontology. Jev checks every piece before it goes into the graph.
 
-- Jev System One makes every decision: chunk boundaries, what is extracted, which entities are the same, which links exist. No other model decides anything (P0).
-- The coding-agent harness (Claude Code or Codex) only generates text Jev cannot: the Registry draft, extractions, summaries. Nothing a harness writes enters the graph without an accepting Jev decision (P3).
-- All domain knowledge lives in the versioned Registry (`registry/`), never in code (P1).
-- Question answering and training-data generation are specified separately in `jev-graph-builder-qa-spec.md`.
-
-The design is specified in `jev-graph-builder-spec.md`. Section numbers (§) below refer to it.
-
-## Setup
+## Quickstart
 
 ```bash
-python -m venv .venv && .venv/bin/pip install -e '.[dev]'
-export TYPESAFE_API_KEY=...          # never put secrets in the config file or the Registry
+git clone https://github.com/greghavens/jev-graph-builder
+cd jev-graph-builder
+python -m venv .venv && .venv/bin/pip install -e .
+
+export TYPESAFE_API_KEY=...        # your TypeSafe key
+.venv/bin/jev-graph-builder --harness claude_code build ./my-docs
 ```
 
-- PostgreSQL 16 with pgvector. Without `--db`, `build` starts and reuses its own local container (`profiles.postgres`, podman or docker).
-- Migrations are generated from the active embedding profile. The vector dimension and HNSW parameters come from `registry/profiles.yaml`.
-- Tesseract is optional. It is only used for scanned PDFs, per the `ocr` policy.
+- `./my-docs` is your documents (see [Your documents](#your-documents)).
+- `--harness` is your coding agent: `claude_code`, `codex`, or `auto` (see [Coding agent](#coding-agent)).
+- With no database given, `build` starts a local pgvector container with podman or docker.
 
-Configuration comes from `jev-graph-builder.yaml` (or the path in `$JEV_GRAPH_BUILDER_CONFIG`) and `JGB_*` environment variables. Nested keys use `__`, for example `JGB_PROFILES__JEV=typesafe`.
+The run pauses once, early on: it shows the ontology it drafted from your documents (entity types, relation types and so on) and asks you to approve it. Answer no and it stops; running `build` again asks again. After you approve, it runs to the end. If it stops for any reason, run the same command again and it picks up where it left off.
 
-## Usage
+## Requirements
+
+- Python 3.11 or later
+- A TypeSafe API key, in `TYPESAFE_API_KEY`
+- A coding agent CLI, installed and logged in: [Claude Code](https://claude.com/claude-code) (`claude`) and/or [Codex](https://github.com/openai/codex) (`codex`)
+- Either podman or docker (for the automatic database), or your own PostgreSQL 16 with the pgvector extension
+- Optional: Tesseract, for scanned PDFs
+
+## Your documents
+
+Pass any mix of files, directories and glob patterns:
 
 ```bash
-jev-graph-builder --harness auto build <docs...> [--db <dsn>] [--corpus <id>] [--stop-after <stage>]
+jev-graph-builder build ./docs
+jev-graph-builder build ./handbook ./release-notes/2026 extra/faq.md
+jev-graph-builder build './site/**/*.html'
 ```
 
-That one command does everything: S0 (the harness drafts the Registry, Jev verifies it), then S1..S7, then verification. You are asked for input only at one gate: the drafted Registry (once per corpus). Every other decision is Jev's.
+- Directories are read recursively. Hidden files (names starting with `.`) are skipped.
+- Supported formats: Markdown, HTML, Word (`.docx`), PDF, and plain text (`.txt`, `.rst`, other text files). HTML is also recognised by its content when the file name doesn't say.
+- Markdown front matter becomes document metadata.
+- A file that can't be read is marked failed and the rest of the run carries on. `status` lists failures, and re-running `build` retries them.
 
-Re-running the same command resumes where it stopped. `--stop-after bootstrap|ingest|segment|enrich|...` stops after that stage so each stage's output can be inspected before the next one runs; re-run without it (or with a later stage) to continue.
+## Coding agent
 
-Documents may be Markdown, HTML (detected by content too), DOCX, PDF or text. HTML is converted to Markdown generically (`policies.ingest.html`); Markdown front matter is metadata, and S0 proposes which metadata keys (e.g. a release) Jev should see. Jev's answer is the decision: yes is yes, no is no, with no thresholds or uncertain band in code (§11.5). A chunk longer than the embedding window is split where Jev chooses.
-
-Other commands (`bootstrap`, `ingest`, `run <stage>`, `plan`, `registry ...`, `search`, `serve`, `audit`, `status`) run single steps; `--harness claude_code|codex|auto` overrides the harness per command.
-
-## Layout
-
-| Path | Contents |
+| `--harness` | Uses |
 |---|---|
-| `jev_graph_builder/registry/` | loader, JSON Schemas, lint, versioned proposals |
-| `jev_graph_builder/jev/` | TypeSafe client and limiter, state / question builders, gating, service with cache and audit rows |
-| `jev_graph_builder/harness/` | Claude Code / Codex adapters, batch jobs |
-| `jev_graph_builder/pipeline/` | stages S0–S7 and the ledger-driven runner (S8 belongs to the QA spec) |
-| `jev_graph_builder/query/` | hybrid search, HTTP API |
-| `jev_graph_builder/calibrate/`, `audit/` | question-set drafting, drift; P3 / status reports |
-| `jev_graph_builder/store/` | psycopg pool, templated migrations, upserts |
-| `registry/` | seed Registry: corpus, ontology, question sets, prompts, schemas, policies, profiles, training templates |
+| `claude_code` | Claude Code only |
+| `codex` | Codex only |
+| `auto` (default) | Both. Jev picks the model for each job, so both CLIs must be installed and logged in. |
+
+The option goes before the command: `jev-graph-builder --harness codex build ./docs`.
+
+## Options
+
+```bash
+jev-graph-builder build <docs...> [--db <postgres-url>] [--corpus <id>] [--stop-after <stage>]
+```
+
+| Option | Meaning |
+|---|---|
+| `--db` | Use your own PostgreSQL instead of the automatic container |
+| `--corpus` | Name for this document set, so one database can hold several |
+| `--stop-after` | Stop after a stage (`bootstrap`, `ingest`, `segment`, `enrich`, ...) to inspect it; run again without it to continue |
+
+The same settings can go in a `jev-graph-builder.yaml` file in the working directory instead of on the command line:
+
+```yaml
+dsn: postgresql://user@localhost:5432/graph
+harness: claude_code
+```
+
+Keep the TypeSafe key in the environment, not in this file.
+
+## After the build
+
+```bash
+jev-graph-builder status                  # progress, counts and failures per stage
+jev-graph-builder search "how do retries work" -k 10
+jev-graph-builder serve                   # HTTP API
+```
+
+Every command prints JSON on stdout. Progress and logs go to stderr.
 
 ## Tests
 
 ```bash
-pytest tests/unit tests/contract                  # no services needed
-JGB_TEST_DSN=postgresql://u:p@host/db pytest tests/integration   # or a container runtime for testcontainers
-python -m jev_graph_builder.lint.hardcoding        # R-002 hard-coding lint (lint_allowlist.yaml)
+pip install -e '.[dev]'
+pytest tests/unit tests/contract                                  # no services needed
+JGB_TEST_DSN=postgresql://user@host/db pytest tests/integration   # needs PostgreSQL with pgvector
 ```
-
-- Contract tests replay a recorded live Jev response and harness event streams.
-- Integration tests run the whole pipeline against a fixture corpus, with a scripted fake Jev and harness.
-  - `test_resume.py` kills `run --all` at random points (5 trials) and checks that the resumed state is byte-identical to an uninterrupted run.
-  - `JGB_TEST_KEEP_DB=1` keeps the test databases for inspection.
