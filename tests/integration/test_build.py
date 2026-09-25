@@ -173,12 +173,12 @@ async def test_build_derives_missing_metadata_from_text(env: Harnessed, docs: li
     assert asked[0] > 0  # only Jev decided
 
 
-async def test_build_splits_overlong_runs_where_jev_is_least_sure(env: Harnessed, docs: list[Path], tmp_path: Path,
-                                                                   monkeypatch: pytest.MonkeyPatch) -> None:
-    """§8.3: code cuts where a section starts. Every fixture section is longer than a 16-token cap, so
-    Jev decides its gaps and keeps them together; code splits each over-long run at the fitting gap
-    Jev was least sure of, without asking Jev again. Every chunk of two or more units fits the cap,
-    and the chunks cover each document's units in order with nothing lost."""
+async def test_build_segments_by_code_without_asking_jev(env: Harnessed, docs: list[Path], tmp_path: Path,
+                                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    """§8.3: code cuts where a section starts, and splits every section longer than a 16-token cap
+    (all fixture sections are) at unit boundaries. Jev is asked about no gap; each chunk gets one chunk
+    check. Every chunk of two or more units fits the cap, and the chunks cover each document's units
+    in order with nothing lost."""
     import yaml
 
     monkeypatch.setenv(CONFIG_FILE_ENV, str(tmp_path / "jev-graph-builder.yaml"))
@@ -198,14 +198,15 @@ async def test_build_splits_overlong_runs_where_jev_is_least_sure(env: Harnessed
         chunks = conn.execute("SELECT doc_id, ord, unit_ids, tokens FROM chunks ORDER BY doc_id, ord").fetchall()
         units = {r[0]: r[1] for r in conn.execute(
             "SELECT doc_id, array_agg(unit_id ORDER BY ord) FROM units GROUP BY doc_id").fetchall()}
-        gaps = conn.execute("SELECT count(*) FROM decisions "
-                            "WHERE split_part(question_set, '@', 1) IN ('segment', 'segment_fanout')").fetchone()[0]
+        by_qs = dict(conn.execute("SELECT split_part(question_set, '@', 1), count(*) FROM decisions GROUP BY 1").fetchall())
     by_doc: dict[str, list[str]] = {}
     for doc_id, _ord, unit_ids, tokens in chunks:
         assert len(unit_ids) == 1 or tokens <= cap, (doc_id, tokens, cap)
         by_doc.setdefault(doc_id, []).extend(unit_ids)
     assert by_doc == units                                    # every unit, once, in order
-    assert gaps > 0 and len(chunks) > len(units)              # Jev judged the gaps; code split the runs
+    assert len(chunks) > len(units)                           # code split the long sections
+    assert not {"segment", "segment_fanout"} & set(by_qs)     # Jev decided no gap
+    assert by_qs["chunk_check_fanout"] == len(chunks)         # one per chunk
 
 
 class Killed(Exception):
@@ -330,7 +331,7 @@ async def test_enrich_fails_chunks_without_extraction_and_stops_on_a_usage_limit
     async with await psycopg.AsyncConnection.connect(env.settings.dsn) as conn:
         cur = await conn.execute("SELECT status, last_error FROM work_items WHERE stage = 'enrich'")
         rows = await cur.fetchall()
-        cur = await conn.execute("SELECT count(*) FROM chunks WHERE summary IS NOT NULL")
+        cur = await conn.execute("SELECT count(*) FROM chunks WHERE summary_decision_ids IS NOT NULL")
         written = (await cur.fetchone())[0]
     assert rows and not any(status == "done" for status, _ in rows), rows
     assert sum(1 for _, err in rows if err and "ExtractionMissing" in err) == 1, rows

@@ -1,13 +1,13 @@
 name: link_fanout
-version: 1
+version: 2
 jev_model: jev-1.13.0
 purpose: "S6 anchor fan-out packing of `link`: one anchor chunk against several candidates per call. Used only when R-111 allows it."
 state_template:
-  anchor: {fields: [title_path, meta, summary, text], max_tokens_ref: policies.link.state_tokens_per_chunk, untrusted: true}
+  anchor: {fields: [title_path, meta, text], max_tokens_ref: policies.link.state_tokens_per_chunk, untrusted: true}
 fanout:
   over: candidates
   max_ref: policies.link.fanout_per_call
-  item_fields: [title_path, meta, summary, text, shared_entities]
+  item_fields: [title_path, meta, text, shared_entities]
   item_max_tokens_ref: policies.link.state_tokens_per_candidate
   untrusted: true
 questions:

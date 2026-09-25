@@ -1,9 +1,9 @@
 name: audit_orphan
-version: 1
+version: 2
 jev_model: jev-1.13.0
 purpose: "S7: an accepted chunk with no semantic edge. Accept means it should be connected, so its link candidates are re-run."
 state_template:
-  chunk: {fields: [title, meta, summary, text], max_tokens_ref: policies.link.state_tokens_per_chunk, untrusted: true}
+  chunk: {fields: [title, meta, text], max_tokens_ref: policies.link.state_tokens_per_chunk, untrusted: true}
 questions:
   should_connect:
     type: noul

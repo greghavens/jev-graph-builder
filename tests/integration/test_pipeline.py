@@ -95,3 +95,44 @@ async def test_full_pipeline(ctx, env, tmp_path: Path) -> None:
                 doc_splits[chunk_doc[cid]].add(rec["split"])
     leaks = {d: s for d, s in doc_splits.items() if len(s) > 1}
     assert not leaks, leaks
+
+
+async def test_a_new_question_set_version_reuses_answers_to_unchanged_questions(settings, monkeypatch) -> None:
+    """§11.7: a version that only removes a question is answered from the stored call on the same state,
+    with no Jev call. A reworded question, a changed option list or a different document is asked again."""
+    import yaml
+
+    from jev_graph_builder.registry.loader import Registry
+    from tests.integration.conftest import Harnessed
+    from tests.integration.fakes import FakeHarness, FakeJev
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-key")
+    qs_dir = settings.resolved_registry() / "question_sets"
+    base = yaml.safe_load((qs_dir / "doc_triage@2.yaml").read_text(encoding="utf-8"))
+    removed = {**base, "version": 3, "questions": {"in_scope": base["questions"]["in_scope"]}}
+    reworded = {**removed, "version": 4, "questions": {"in_scope": {
+        "type": "noul", "instructions": "`document` belongs in the corpus described in `corpus.scope`."}}}
+    fewer_options = {**base, "version": 5, "questions": {**base["questions"], "doc_type": {
+        **base["questions"]["doc_type"], "criteria": {"how_to": "Steps to do a task.", "reference": "Facts to look up."}}}}
+    for doc in (removed, reworded, fewer_options):
+        (qs_dir / f"doc_triage@{doc['version']}.yaml").write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    reg = Registry(settings.resolved_registry())
+    env = Harnessed(settings, FakeJev(reg), FakeHarness(reg))
+    rt, ctx = await env.open()
+    try:
+        inputs = {"document": {"title": "T", "headings": ["H"], "opening": "Some text."}, "corpus": {"scope": "docs"}}
+        first = (await ctx.jev.ask("doc_triage", inputs, "document", "d1", qs_version=2)).single
+        paid = len(env.fake_jev.calls)
+        again = await ctx.jev.ask("doc_triage", inputs, "document", "d1", qs_version=3)
+        assert len(env.fake_jev.calls) == paid and again.cache_hits == 1
+        assert again.single.answers["in_scope"] == first.answers["in_scope"]
+        assert again.single.outcome == first.outcome
+        await ctx.jev.ask("doc_triage", inputs, "document", "d1", qs_version=4)
+        assert len(env.fake_jev.calls) == paid + 1
+        await ctx.jev.ask("doc_triage", inputs, "document", "d1", qs_version=5)
+        assert len(env.fake_jev.calls) == paid + 2
+        other = {**inputs, "document": {**inputs["document"], "opening": "Other text."}}
+        await ctx.jev.ask("doc_triage", other, "document", "d2", qs_version=3)
+        assert len(env.fake_jev.calls) == paid + 3
+    finally:
+        await rt.close()

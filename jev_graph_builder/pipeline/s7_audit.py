@@ -117,8 +117,8 @@ class AuditStage(Stage):
     # --------------------------------------------------------------- judging
 
     async def _view(self, ctx: Context, chunk_id: str) -> dict[str, Any]:
-        r = await ctx.db.fetchone("SELECT title, summary, text, meta FROM chunks WHERE chunk_id = %s", (chunk_id,)) or {}
-        return {"title": r.get("title") or "", "meta": r.get("meta"), "summary": r.get("summary") or "", "text": r.get("text") or ""}
+        r = await ctx.db.fetchone("SELECT title, text, meta FROM chunks WHERE chunk_id = %s", (chunk_id,)) or {}
+        return {"title": r.get("title") or "", "meta": r.get("meta"), "text": r.get("text") or ""}
 
     async def process(self, ctx: Context, item: WorkItem) -> Writer:
         if item.item_id.startswith(ORPHAN_PREFIX):

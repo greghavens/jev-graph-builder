@@ -1,11 +1,9 @@
 """S1: ingest and normalize (code) + triage (Jev) (§8.2).
 
-Per file: parse to structural units, normalize, split over-long units at
-sentence boundaries (the boundaries themselves are then judged by Jev in S2),
-compute `doc_id = sha256(normalized_text + source_uri)`, link exact duplicates
+Per file: parse to structural units, normalize, split over-long units (prose
+at sentence boundaries, then lines and spaces), compute `doc_id = sha256(normalized_text + source_uri)`, link exact duplicates
 with the structural `DUPLICATE_OF` edge, and run `QS.doc_triage`. Out-of-scope
-documents are parked; documents flagged for AI-directed instructions are
-quarantined.
+documents are parked. Injection is checked per chunk in S2.
 """
 
 from __future__ import annotations
@@ -20,7 +18,7 @@ import pysbd
 from jev_graph_builder.ids import sha256_hex
 from jev_graph_builder.jev.gating import ACCEPT
 from jev_graph_builder.ledger.ledger import DONE, WorkItem
-from jev_graph_builder.parse.parsers import HEADING, ParsedUnit, parse
+from jev_graph_builder.parse.parsers import CODE, HEADING, TABLE, ParsedUnit, parse
 from jev_graph_builder.pipeline.common import Context, Deps, Stage, Writer, write_decisions
 from jev_graph_builder.store import repo
 
@@ -58,23 +56,59 @@ def detect_language(reg: Any, text: str) -> str:
     return code if code in names else reg.policy("ingest.language_fallback")
 
 
+def fit_text(text: str, max_tokens: int, estimate: Any, seps: tuple[str, ...] = ("\n", " ")) -> list[str]:
+    """`text` as pieces of at most `max_tokens`: grouped at line breaks, then at spaces, then cut."""
+    if estimate(text) <= max_tokens:
+        return [text]
+    if not seps:
+        out, rest = [], text
+        while estimate(rest) > max_tokens:
+            n = max(len(rest) * max_tokens // estimate(rest), 1)
+            out.append(rest[:n])
+            rest = rest[n:]
+        return [*out, rest] if rest else out
+    sep, finer = seps[0], seps[1:]
+    out, group = [], ""
+    for part in text.split(sep):
+        joined = f"{group}{sep}{part}" if group else part
+        if estimate(joined) <= max_tokens:
+            group = joined
+            continue
+        if group:
+            out.append(group)
+        if estimate(part) <= max_tokens:
+            group = part
+        else:
+            out.extend(fit_text(part, max_tokens, estimate, finer))
+            group = ""
+    if group:
+        out.append(group)
+    return out
+
+
 def split_long_units(units: list[ParsedUnit], max_tokens: int, estimate: Any, language: str) -> list[ParsedUnit]:
-    """§8.3 step 1: an over-long unit becomes sentence groups; Jev judges the new gaps in S2."""
+    """§8.3 step 1: every non-heading unit fits `max_tokens`. Prose becomes sentence groups (a sentence
+    still over the cap, and code or a table, is split at lines, then spaces)."""
     seg = pysbd.Segmenter(language=language, clean=False)
     out: list[ParsedUnit] = []
     for u in units:
         if estimate(u.text) <= max_tokens or u.kind == HEADING:
             out.append(u)
             continue
-        group: list[str] = []
-        for sentence in seg.segment(u.text):
-            s = sentence.strip()
-            if group and estimate(" ".join([*group, s])) > max_tokens:
-                out.append(ParsedUnit(u.kind, " ".join(group), u.heading_path, u.page))
-                group = []
-            group.append(s)
-        if group:
-            out.append(ParsedUnit(u.kind, " ".join(group), u.heading_path, u.page))
+        if u.kind in (CODE, TABLE):
+            pieces = fit_text(u.text, max_tokens, estimate)
+        else:
+            pieces, group = [], []
+            for sentence in seg.segment(u.text):
+                s = sentence.strip()
+                if group and estimate(" ".join([*group, s])) > max_tokens:
+                    pieces.append(" ".join(group))
+                    group = []
+                group.append(s)
+            if group:
+                pieces.append(" ".join(group))
+            pieces = [p for piece in pieces for p in fit_text(piece, max_tokens, estimate)]
+        out.extend(ParsedUnit(u.kind, p, u.heading_path, u.page) for p in pieces)
     return out
 
 
@@ -126,7 +160,6 @@ class IngestStage(Stage):
         )
         triage = None
         in_scope: bool | None = None
-        quarantined = False
         status = "accepted"
         doc_type = None
         language = detect_language(reg, text) if text else None
@@ -143,15 +176,12 @@ class IngestStage(Stage):
                 in_scope = True
             else:
                 in_scope, status = False, "parked"
-            injection = ctx.flag(triage, "injection")
-            if injection:
-                quarantined, status = True, "quarantined"
         elif dup is not None:
             status = "duplicate"
         doc_row = {
             "doc_id": doc_id, "corpus_id": ctx.corpus_id, "source_uri": uri, "content_hash": content_hash,
             "mime": parsed.mime, "title": parsed.title, "language": language, "doc_type": doc_type,
-            "in_scope": in_scope, "quarantined": quarantined, "meta": parsed.meta,
+            "in_scope": in_scope, "meta": parsed.meta,
             "triage_decision_id": triage.single.decision_id if triage else None, "status": status,
             "registry_version": ctx.registry_version, "created_run_id": ctx.run_id,
         }

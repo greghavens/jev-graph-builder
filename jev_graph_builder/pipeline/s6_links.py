@@ -129,11 +129,11 @@ class LinkStage(Stage):
     async def _chunk_views(self, ctx: Context, ids: list[str]) -> dict[str, dict[str, Any]]:
         sep = ctx.reg.policy("segment.heading_separator")
         rows = await ctx.db.fetch(
-            "SELECT chunk_id, doc_id, heading_path, title, summary, text, meta FROM chunks WHERE chunk_id = ANY(%s)", (ids,))
+            "SELECT chunk_id, doc_id, heading_path, title, text, meta FROM chunks WHERE chunk_id = ANY(%s)", (ids,))
         out = {}
         for r in rows:
             path = sep.join([*(r["heading_path"] or []), *([r["title"]] if r["title"] else [])])
-            out[r["chunk_id"]] = {"title_path": path, "summary": r["summary"] or "", "text": r["text"], "doc_id": r["doc_id"],
+            out[r["chunk_id"]] = {"title_path": path, "text": r["text"], "doc_id": r["doc_id"],
                                   "meta": r["meta"]}
         return out
 
@@ -173,7 +173,7 @@ class LinkStage(Stage):
     # ---------------------------------------------------------------- deciding
 
     def _state(self, view: dict[str, Any]) -> dict[str, Any]:
-        return {k: view[k] for k in ("title_path", "summary", "text", "meta")}
+        return {k: view[k] for k in ("title_path", "text", "meta")}
 
     async def _decide(self, ctx: Context, anchor: str, cands: list[tuple[str, list[str]]]
                       ) -> tuple[list[tuple[str, list[str], Decision, list[Decision]]], list[AskResult]]:

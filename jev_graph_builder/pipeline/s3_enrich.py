@@ -6,8 +6,8 @@
    its own job finishes, so a stopped run keeps every chunk already written.
 2. Every entity span and claim evidence span is grounded in the chunk text
    (`grounding`); ambiguous spans are resolved by Jev (`QS.span_locate`).
-3. Every entity and claim is verified by `QS.extract_verify`; summary
-   sentences by `QS.summary_verify` (citation check).
+3. Every entity and claim is verified by `QS.extract_verify`; the chunk title
+   and each keyword by `QS.summary_verify` (citation check).
 4. Jev is the last model to decide: if Jev says no, the item is dropped. No harness re-extracts or
    second-guesses a Jev answer. A chunk whose harness output never validates
    gets no extraction.
@@ -18,8 +18,6 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from typing import Any
-
-import pysbd
 
 from jev_graph_builder.ids import sha256_hex, short_key
 from jev_graph_builder.jev.gating import ACCEPT
@@ -46,7 +44,6 @@ class ExtractionMissing(Exception):
 class Descriptors:
     """Jev-verified chunk descriptors (the parts of the harness record that were accepted)."""
 
-    summary: str | None
     title: str | None
     keywords: list[str]
     decision_ids: list[str]
@@ -272,16 +269,14 @@ class EnrichStage(Stage):
             out.extend(part)
         return out
 
-    async def _summary(self, ctx: Context, row: dict[str, Any], record: dict[str, Any] | None,
+    async def _descriptors(self, ctx: Context, row: dict[str, Any], record: dict[str, Any] | None,
                        results: list[AskResult]) -> Descriptors:
-        """P3: the summary (per sentence), title and each keyword are harness output;
+        """P3: the title and each keyword are harness output;
         each piece is kept only when `QS.summary_verify` accepts it."""
         record = record or {}
-        seg = pysbd.Segmenter(language=ctx.reg.policy("ingest.sentence_language"), clean=False)
-        sentences = [s.strip() for s in seg.segment(record.get("summary") or "") if s.strip()]
         title = (record.get("title") or "").strip()
         keywords = [k.strip() for k in record.get("keywords") or [] if k.strip()]
-        pieces = list(dict.fromkeys(sentences + ([title] if title else []) + keywords))
+        pieces = list(dict.fromkeys(([title] if title else []) + keywords))
         ok: dict[str, Decision] = {}
         if ctx.reg.policy("extract.packing") == "fanout":
             cap = ctx.reg.policy("extract.fanout_per_call")
@@ -302,13 +297,11 @@ class EnrichStage(Stage):
             ))
             results.extend(asks)
             ok = {s: r.single for s, r in zip(pieces, asks, strict=True) if r.single.outcome == ACCEPT}
-        kept = [s for s in sentences if s in ok]
         out_keywords = [k for k in keywords if k in ok]
         return Descriptors(
-            summary=" ".join(kept) or None,
             title=title if title in ok else None,
             keywords=out_keywords,
-            decision_ids=sorted({ok[s].decision_id for s in kept + out_keywords + ([title] if title in ok else [])}),
+            decision_ids=sorted({ok[s].decision_id for s in out_keywords + ([title] if title in ok else [])}),
         )
 
     # ---------------------------------------------------------------- process
@@ -329,11 +322,11 @@ class EnrichStage(Stage):
             raise ExtractionMissing(missing or "no valid record")
         results: list[AskResult] = []
         verified = await self._verify_all(ctx, row, record, results)
-        summary = await self._summary(ctx, row, record, results)
-        return self._writer(ctx, row, record, verified, summary, results)
+        descriptors = await self._descriptors(ctx, row, record, results)
+        return self._writer(ctx, row, record, verified, descriptors, results)
 
     def _writer(self, ctx: Context, row: dict[str, Any], record: dict[str, Any] | None, verified: list[Verified],
-                summary: Descriptors, results: list[AskResult]) -> Writer:
+                descriptors: Descriptors, results: list[AskResult]) -> Writer:
         chunk_id = row["chunk_id"]
         entities, mentions, claims = [], [], []
         base = {"registry_version": ctx.registry_version, "created_run_id": ctx.run_id}
@@ -368,8 +361,8 @@ class EnrichStage(Stage):
                 "AND status = 'superseded') AND NOT (entity_id = ANY(%s))", (chunk_id, [e["entity_id"] for e in entities]))
             if record is not None:
                 await conn.execute(
-                    "UPDATE chunks SET summary = %s, title = %s, keywords = %s, summary_decision_ids = %s WHERE chunk_id = %s",
-                    (summary.summary, summary.title, summary.keywords, summary.decision_ids, chunk_id))
+                    "UPDATE chunks SET title = %s, keywords = %s, summary_decision_ids = %s WHERE chunk_id = %s",
+                    (descriptors.title, descriptors.keywords, descriptors.decision_ids, chunk_id))
             return DONE
 
         return write

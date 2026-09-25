@@ -16,9 +16,11 @@ from jev_graph_builder.parse.parsers import parse_pdf
 from jev_graph_builder.pipeline.evolution import evolution_due, jev_accepted, significantly_above
 from jev_graph_builder.pipeline.ontology_checks import CheckReport, check_definitions
 from jev_graph_builder.pipeline.grounding import EXACT, FUZZY, NORMALIZED, UNGROUNDED, ground
-from jev_graph_builder.pipeline.segment_spans import runs, split_gaps, weakest_gap
+from jev_graph_builder.pipeline.segment_spans import runs, spans, split_gaps, split_section, starts_section
 from jev_graph_builder.pipeline.unionfind import JEV_SAID_DIFFERENT, merge
-from jev_graph_builder.pipeline.s2_segment import SegmentStage, jev_gaps, keep_strength, named_values, section_groups, starts_section
+from jev_graph_builder.parse.parsers import ParsedUnit
+from jev_graph_builder.pipeline.s1_ingest import fit_text, split_long_units
+from jev_graph_builder.pipeline.s2_segment import SegmentStage, max_chunk_tokens, named_values, structural_role
 from jev_graph_builder.pipeline.s5_entities import identical_pairs, name_key_pairs
 from jev_graph_builder.pipeline.s8_training import assign_split
 from jev_graph_builder.query.search import composite, rrf_fuse
@@ -99,43 +101,38 @@ def test_identical_names_merge_by_code_first():
     assert out.find("e1") == out.find("e2") == out.find("e4") and out.find("e3") == "e3"
 
 
-def _u(kind, text="t"):
-    return {"kind": kind, "text": text, "heading_path": []}
+def _u(kind, text="t", tokens=10):
+    return {"kind": kind, "text": text, "heading_path": [], "tokens": tokens}
 
 
 def test_heading_after_content_is_a_code_boundary():
     units = [_u("heading"), _u("heading"), _u("paragraph"), _u("paragraph"), _u("heading"), _u("paragraph")]
-    forced = [g for g in range(len(units) - 1) if starts_section(units, g)]
-    assert forced == [3]                               # heading after a paragraph; heading under heading is Jev's
-    asked = [g for g in range(len(units) - 1) if g not in forced]
-    assert section_groups(asked, 2) == [[0, 1], [2], [4]]   # never spans the code cut, at most 2 per call
+    assert [g for g in range(len(units) - 1) if starts_section(units, g)] == [3]   # heading under heading is not
+    assert spans(units, 100) == [(0, 4), (4, 6)]      # every section fits: one chunk each
 
 
-def test_jev_decides_gaps_only_inside_sections_over_the_cap():
-    units = [{**_u(k), "tokens": t} for k, t in
-             [("heading", 5), ("paragraph", 10), ("heading", 5), ("paragraph", 30), ("paragraph", 30)]]
-    assert jev_gaps(units, 40) == [2, 3]              # section 1 (15 tokens) is one chunk; section 2 (65) goes to Jev
-    assert jev_gaps(units, 100) == []                 # every section fits: Jev is not asked
+def test_long_section_splits_into_the_fewest_even_pieces_that_fit():
+    units = [_u("heading", tokens=5), *(_u("paragraph") for _ in range(7))]   # 75 tokens, cap 40: two pieces
+    pieces = split_section(units, 0, 8, 40)
+    assert pieces == [(0, 4), (4, 8)]                 # 35 + 40, not 35 + 40 greedy tail; each fits
+    assert [i for s, e in pieces for i in range(s, e)] == list(range(8))
+    assert split_section(units, 0, 3, 40) == [(0, 3)]  # a run that fits is left whole
+    assert split_section([_u("paragraph", tokens=90), _u("paragraph")], 0, 2, 40) == [(0, 1), (1, 2)]  # one unit over the cap
 
 
-def test_split_at_the_gap_jev_least_keeps_together():
-    keep = [0.9, 0.55, 0.8, 0.55]
-    assert weakest_gap([0, 1, 2], keep) == 1
-    assert weakest_gap([0, 1, 2, 3], keep) == 3        # a tie goes to the later gap: the larger left chunk
-    d = Decision("d", "gap", "g", "segment_fanout@1", "k", ACCEPT,
-                 {"same_topic_continues": {"type": "noul", "p": 0.3}, "after_depends_on_before": {"type": "noul", "p": 0.7}},
-                 [], "fake", None, 0.5, 0)
-    assert keep_strength(d) == 0.7                     # either yes keeps the sides together
+def test_split_skips_a_gap_after_a_lead_in():
+    units = [_u("paragraph"), _u("paragraph", "Run this command:"), _u("code"), _u("paragraph")]
+    assert split_section(units, 0, 4, 30) == [(0, 3), (3, 4)]   # the even cut (after the lead-in) is skipped
+    units = [_u("heading"), _u("paragraph"), _u("paragraph"), _u("paragraph")]
+    assert split_section(units, 0, 4, 20) == [(0, 2), (2, 4)]   # never a heading alone
 
 
-def test_overlong_run_splits_where_jev_is_least_sure_until_every_piece_fits():
-    tokens = [10] * 6
-    keep = [0.9, 0.6, 0.95, 0.7, 0.8]                  # Jev's keep-together strength per gap
-    pieces = SegmentStage._fit(tokens, keep, 0, 6, 30)
-    assert pieces == [(0, 2), (2, 4), (4, 6)]         # gap 1 (0.6) first, then gap 3 (0.7), weakest of the fitting gaps 2-4
-    assert all(sum(tokens[s:e]) <= 30 for s, e in pieces)
-    assert [i for s, e in pieces for i in range(s, e)] == list(range(6))
-    assert SegmentStage._fit(tokens, keep, 0, 3, 30) == [(0, 3)]   # a run that fits is left whole
+def test_role_comes_from_structure():
+    assert structural_role([_u("heading")], 0.5) == "heading"
+    assert structural_role([_u("heading"), _u("list", "1. Open\n2. Save", 30), _u("paragraph")], 0.5) == "procedure"
+    assert structural_role([_u("list", "- a\n- b", 30), _u("paragraph")], 0.5) is None     # a bullet list is no procedure
+    assert structural_role([_u("table", tokens=30), _u("paragraph")], 0.5) == "reference"
+    assert structural_role([_u("code", tokens=10), _u("paragraph", tokens=10)], 0.5) is None  # not more than half
 
 
 def test_named_values_are_whole_word_matches():
@@ -445,3 +442,38 @@ def test_gating_policy_invalidates_jev_stages_only():
     assert Context.deps_hash(base, jev) != Context.deps_hash(ctx({"threshold": 0.6, "backoff": 0.5}), jev)
     assert Context.deps_hash(base, jev) != Context.deps_hash(ctx({"threshold": 0.5, "backoff": 0.75}), jev)
     assert Context.deps_hash(base, code) == Context.deps_hash(ctx({"threshold": 0.6, "backoff": 0.5}), code)
+
+
+def test_every_non_heading_unit_fits_the_unit_cap():
+    est = TokenEstimator(1).text
+    code = "\n".join(f"line {i:03d} of code" for i in range(40))          # no sentences, 40 lines
+    one_sentence = " ".join(["word"] * 60)                                  # a single sentence over the cap
+    blob = "x" * 130                                                        # no line break, no space
+    units = [ParsedUnit("code", code, [], None), ParsedUnit("paragraph", one_sentence, [], None),
+             ParsedUnit("paragraph", blob, [], None), ParsedUnit("heading", "h" * 80, [], None)]
+    out = split_long_units(units, 50, est, "en")
+    assert all(est(u.text) <= 50 for u in out if u.kind != "heading")
+    assert "\n".join(u.text for u in out if u.kind == "code") == code      # nothing lost, order kept
+    assert " ".join(u.text for u in out if u.text.startswith("word")) == one_sentence
+    assert "".join(u.text for u in out if u.text.startswith("x")) == blob
+    assert [u.text for u in out if u.kind == "heading"] == ["h" * 80]       # a heading is never split
+
+
+def test_fit_text_leaves_fitting_text_whole():
+    assert fit_text("short text", 50, TokenEstimator(1).text) == ["short text"]
+
+
+def test_chunk_cap_never_exceeds_the_chunk_check_window(reg):
+    ctx = SimpleNamespace(reg=reg, settings=SimpleNamespace(profiles=SimpleNamespace(embedding="openai_compatible")),
+                          jev=SimpleNamespace(profile={"context_tokens": 150000}))
+    assert max_chunk_tokens(ctx) <= reg.policy("segment.chunk_state_tokens")
+
+
+def test_a_chunk_the_check_cannot_see_whole_fails_its_document_before_jev_is_asked(reg):
+    async def never(*_a, **_k):
+        raise AssertionError("Jev must not be asked")
+    window = reg.policy("segment.chunk_state_tokens")
+    ctx = SimpleNamespace(reg=reg, jev=SimpleNamespace(ask=never, provider=SimpleNamespace(estimator=TokenEstimator(1))))
+    drafts = [{"chunk_id": "c1", "text": "y" * (window + 1), "units": [{"kind": "paragraph", "heading_path": []}]}]
+    with pytest.raises(ValueError, match="chunk check window"):
+        asyncio.run(SegmentStage()._check_chunks(ctx, "d1", drafts, []))

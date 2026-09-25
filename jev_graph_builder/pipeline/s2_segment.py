@@ -1,49 +1,46 @@
-"""S2: segmentation — Jev decides boundaries, code assembles (§8.3).
+"""S2: segmentation by code, then Jev's chunk check (§8.3).
 
-Per document: a heading that follows content starts a new section, a structural
-boundary cut by code. A section that fits the chunk cap (derived from the
-profiles) is one chunk. Only inside a longer section does Jev decide each gap,
-with `QS.segment` (one gap per call) or `QS.segment_fanout` (a window of units
-with one pair of Nouls per gap, R-111): Jev's accept keeps the two sides
-together, reject is a chunk boundary. A run Jev kept together that is still
-longer than the cap is split by code at the gap Jev was least sure belongs
-together, repeatedly, until every chunk fits. Each chunk's context prefix is its
-heading path (code); then the injection check (only when S1's triage did not see
-the whole document) and classification: packed per document in `QS.chunk_check_fanout` when
-`segment.packing` is fanout, else `QS.injection` then `QS.chunk_classify` per
-chunk. Structural edges (NEXT, PART_OF, IN_SECTION) are code.
+Per document: a heading that follows content starts a new section. A section
+that fits the chunk cap (derived from the profiles) is one chunk; a longer one is
+split by code at unit boundaries (`segment_spans`). Each chunk's context prefix is
+its heading path; its role is code, from its structure (`structural_role`). Jev
+is asked, per chunk and packed per document in `QS.chunk_check_fanout`, whether
+it carries an injection (the only injection check of the build), whether it is
+boilerplate and what its topic is. Structural edges (NEXT, PART_OF,
+IN_SECTION) are code.
 """
 
 from __future__ import annotations
 
 import asyncio
 import re
+from collections import Counter
 from typing import Any
 
 from jev_graph_builder.ids import sha256_hex, short_key
 from jev_graph_builder.jev.gating import ACCEPT
 from jev_graph_builder.jev.service import AskResult, Decision
 from jev_graph_builder.ledger.ledger import DONE, WorkItem
-from jev_graph_builder.parse.parsers import HEADING
+from jev_graph_builder.parse.parsers import CODE, HEADING, LIST, TABLE
 from jev_graph_builder.pipeline.common import Context, Deps, Stage, Writer, chunk_metadata, write_decisions
-from jev_graph_builder.pipeline.s1_ingest import DOC_JOIN, QS_TRIAGE
-from jev_graph_builder.pipeline.segment_spans import runs, split_gaps, weakest_gap
+from jev_graph_builder.pipeline.s1_ingest import DOC_JOIN
+from jev_graph_builder.pipeline.segment_spans import spans
 from jev_graph_builder.store import repo
 
-QS_SEGMENT, QS_SEGMENT_FANOUT = "segment", "segment_fanout"
-QS_INJECTION, QS_CLASSIFY = "injection", "chunk_classify"
 QS_CHECK_FANOUT = "chunk_check_fanout"
 QS_APPLIES, QS_DERIVABLE = "metadata_applies", "metadata_derivable"
-Q_INJECTION = "contains_injection"
 _TOKEN = re.compile(r"\w+(?:\.\w+)*")  # a word, or a dotted run such as a version
+_ORDERED = re.compile(r"^\s*\d+[.)]\s")  # an ordered list's first item
 
 
 def max_chunk_tokens(ctx: Context) -> int:
-    """§8.3: chunk cap = min(embedding max tokens, Jev state share) × policy fraction."""
+    """§8.3: chunk cap = min(embedding max tokens, Jev state share, chunk check window) × policy fraction.
+    Within the check window, Jev's injection check sees every chunk whole."""
     reg = ctx.reg
     emb = reg.profile("embedding", ctx.settings.profiles.embedding)
     jev_share = ctx.jev.profile["context_tokens"] * reg.policy("segment.jev_state_share")
-    return max(int(min(emb["max_tokens"], jev_share) * reg.policy("segment.max_fraction")), 1)
+    window = reg.policy("segment.chunk_state_tokens")
+    return max(int(min(emb["max_tokens"], jev_share, window) * reg.policy("segment.max_fraction")), 1)
 
 
 def heading_path_of(unit: dict[str, Any]) -> list[str]:
@@ -51,38 +48,23 @@ def heading_path_of(unit: dict[str, Any]) -> list[str]:
     return [*path, unit["text"]] if unit["kind"] == HEADING else path
 
 
-def starts_section(units: list[dict[str, Any]], g: int) -> bool:
-    """Gap g (between units g and g+1) is a section start: a heading that follows non-heading content."""
-    return units[g + 1]["kind"] == HEADING and units[g]["kind"] != HEADING
-
-
-def section_groups(gaps: list[int], per_call: int) -> list[list[int]]:
-    """Jev's gaps in calls of at most `per_call`, never spanning a code-cut section boundary
-    (consecutive gap indices belong to one section)."""
-    out: list[list[int]] = []
-    for g in gaps:
-        if out and g == out[-1][-1] + 1 and len(out[-1]) < per_call:
-            out[-1].append(g)
-        else:
-            out.append([g])
-    return out
-
-
-def jev_gaps(units: list[dict[str, Any]], cap: int) -> list[int]:
-    """The gaps Jev decides: those inside a section (between code-cut section starts) longer than
-    `cap`. A section that fits is one chunk and none of its gaps is asked."""
-    n = len(units)
-    out: list[int] = []
-    for s, e in runs(n, [starts_section(units, g) for g in range(n - 1)]):
-        if sum(u["tokens"] for u in units[s:e]) > cap:
-            out.extend(range(s, e - 1))
-    return out
-
-
-def keep_strength(decision: Decision) -> float:
-    """How sure Jev is that a gap's two sides belong together: its highest yes-probability, since
-    either yes keeps them together."""
-    return max(a["p"] for a in decision.answers.values() if a["type"] == "noul")
+def structural_role(units: list[dict[str, Any]], min_share: float) -> str | None:
+    """A chunk's role from its structure: `heading` when it holds only headings; else the kind (ordered
+    list -> procedure, table -> reference, code -> example) holding more than `min_share` of its
+    non-heading tokens; else none."""
+    body = [u for u in units if u["kind"] != HEADING]
+    if not body:
+        return "heading"
+    shares: Counter[str] = Counter()
+    for u in body:
+        if u["kind"] == LIST and _ORDERED.match(u["text"]):
+            shares["procedure"] += u["tokens"]
+        elif u["kind"] in (TABLE, CODE):
+            shares["reference" if u["kind"] == TABLE else "example"] += u["tokens"]
+    if not shares:
+        return None
+    role, n = shares.most_common(1)[0]
+    return role if n > min_share * max(sum(u["tokens"] for u in body), 1) else None
 
 
 def _tokens(text: str) -> str:
@@ -96,24 +78,14 @@ def named_values(text: str, values: list[str]) -> list[str]:
     return [v for v in values if (k := _tokens(v)) and f" {k} " in t]
 
 
-def triage_saw_all(ctx: Context, units: list[dict[str, Any]]) -> bool:
-    """Whether S1's triage showed Jev the whole document (its injection answer then covers every
-    chunk): the document text survives `doc_triage`'s own truncation of `document.opening` unchanged."""
-    spec = ctx.reg.question_set(QS_TRIAGE).state_template["document"]
-    text = DOC_JOIN.join(u["text"] for u in units)
-    rule = spec.get("truncate", ctx.reg.policy("jev.default_truncation"))
-    return ctx.jev.provider.estimator.truncate(text, ctx.reg.policy(spec["max_tokens_ref"]), rule) == text
-
-
 class SegmentStage(Stage):
     name = "segment"
     deps = Deps(
-        question_sets=(QS_SEGMENT, QS_SEGMENT_FANOUT, QS_INJECTION, QS_CLASSIFY, QS_CHECK_FANOUT, QS_APPLIES,
-                       QS_DERIVABLE, QS_TRIAGE),
-        policies=("segment", "jev.untrusted_field", "jev.default_truncation", "ingest.triage_state_tokens", "ingest.metadata_fields", "ingest.applies_values_per_call",
+        question_sets=(QS_CHECK_FANOUT, QS_APPLIES, QS_DERIVABLE),
+        policies=("segment", "jev.untrusted_field", "ingest.metadata_fields", "ingest.applies_values_per_call",
                   "ingest.derivable_values_shown"),
         corpus=True,
-        ontology=("chunk_roles", "topics"),
+        ontology=("topics",),
         embedding=True,
         structural=True,
     )
@@ -202,149 +174,60 @@ class SegmentStage(Stage):
             applied.extend(v for v in group if short_key(field, v) in chosen)
         return applied
 
-    # ---------------------------------------------------------------- gaps
-
-    async def _gap_cuts(self, ctx: Context, doc_id: str, units: list[dict[str, Any]],
-                        cap: int) -> tuple[list[bool], list[float], list[AskResult]]:
-        """Per gap: whether it is a boundary, and how sure Jev is its sides belong together (1.0
-        where code keeps a fitting section whole, 0.0 at a code-cut section start)."""
-        reg = ctx.reg
-        k = reg.policy("segment.window_units")
-        n = len(units)
-        results: list[AskResult] = []
-        # A heading that follows content opens a new section: a structural boundary, cut by code.
-        # A section that fits the cap stays whole; Jev decides the gaps of longer sections only.
-        cut_at = {g: starts_section(units, g) for g in range(n - 1)}
-        keep = [0.0 if cut else 1.0 for cut in cut_at.values()]
-        gaps = jev_gaps(units, cap)
-        use_fanout = reg.policy("segment.packing") == "fanout"
-        if not use_fanout:
-            for g in gaps:
-                before, after = units[max(g - k + 1, 0): g + 1], units[g + 1: g + 1 + k]
-                inputs = {
-                    "before": DOC_JOIN.join(u["text"] for u in before),
-                    "after": DOC_JOIN.join(u["text"] for u in after),
-                    "heading_path_before": heading_path_of(units[g]),
-                    "heading_path_after": heading_path_of(units[g + 1]),
-                }
-                r = await ctx.jev.ask(QS_SEGMENT, inputs, "gap", sha256_hex(units[g]["unit_id"], units[g + 1]["unit_id"]))
-                results.append(r)
-                cut_at[g] = r.single.outcome != ACCEPT
-                keep[g] = keep_strength(r.single)
-            return [cut_at[g] for g in range(n - 1)], keep, results
-
-        per_call = reg.policy("segment.gaps_per_call")
-        for group in section_groups(gaps, per_call):
-            lo, hi = max(group[0] - k + 1, 0), min(group[-1] + k + 1, n)
-            window = units[lo:hi]
-            ukey = {u["unit_id"]: short_key(u["unit_id"]) for u in window}
-            state_units = {ukey[u["unit_id"]]: {"text": u["text"], "heading_path": heading_path_of(u)} for u in window}
-            items = {}
-            gap_keys = []
-            for g in group:
-                gk = short_key(units[g]["unit_id"], units[g + 1]["unit_id"])
-                gap_keys.append(gk)
-                items[gk] = {
-                    "before": ukey[units[g]["unit_id"]], "after": ukey[units[g + 1]["unit_id"]],
-                    "heading_changed": heading_path_of(units[g]) != units[g + 1]["heading_path"],
-                }
-            r = await ctx.jev.ask(QS_SEGMENT_FANOUT, {"units": state_units}, "gap_window",
-                                  sha256_hex(doc_id, *gap_keys), fanout_items=items)
-            results.append(r)
-            by_item = r.by_item()
-            for g, gk in zip(group, gap_keys, strict=True):
-                cut_at[g] = by_item[gk].outcome != ACCEPT
-                keep[g] = keep_strength(by_item[gk])
-        return [cut_at[g] for g in range(n - 1)], keep, results
-
-    @staticmethod
-    def _fit(tokens: list[int], keep: list[float], start: int, end: int, max_tokens: int) -> list[tuple[int, int]]:
-        """Split a run Jev kept together until every piece fits, each time at the fitting gap Jev was
-        least sure belongs together."""
-        out: list[tuple[int, int]] = []
-        while end - start > 1 and sum(tokens[start:end]) > max_tokens:
-            cut = weakest_gap(split_gaps(tokens, start, end, max_tokens), keep)
-            out.append((start, cut + 1))
-            start = cut + 1
-        out.append((start, end))
-        return out
-
     # -------------------------------------------------------------- chunks
 
-    async def _check_chunks(self, ctx: Context, doc_id: str, drafts: list[dict[str, Any]], check_injection: bool,
-                            results: list[AskResult | None]) -> list[tuple[bool, Decision | None]]:
-        """Per chunk: (Jev flags an injection, the classification decision for a clean chunk). The
-        chunk-level injection question is asked only when S1's triage did not see the whole document."""
-        if ctx.reg.policy("segment.packing") == "fanout":
-            cap = ctx.reg.policy("segment.chunks_per_call")
-            asked = set(ctx.reg.question_set(QS_CHECK_FANOUT).questions)
-            if not check_injection:
-                asked.discard(Q_INJECTION)
-            out: list[tuple[bool, Decision | None]] = []
-            for i in range(0, len(drafts), cap):
-                part = drafts[i:i + cap]
-                items = {short_key(d["chunk_id"]): {"text": d["text"], "heading_path": heading_path_of(d["units"][0])} for d in part}
-                r = await ctx.jev.ask(QS_CHECK_FANOUT, {}, "chunk_batch", sha256_hex(doc_id, *items), fanout_items=items,
-                                      item_only={k: asked for k in items})
-                results.append(r)
-                by_item = r.by_item()
-                for key in items:
-                    d = by_item[key]
-                    injected = Q_INJECTION in d.answers and ctx.flag_decision(d, Q_INJECTION)
-                    out.append((injected, None if injected else d))
-            return out
-
-        async def one(d: dict[str, Any]) -> tuple[bool, Decision | None]:
-            if check_injection:
-                inj = await ctx.jev.ask(QS_INJECTION, {"chunk": d["text"]}, "chunk", d["chunk_id"])
-                results.append(inj)
-                if ctx.flag(inj, Q_INJECTION):
-                    return True, None
-            cls = await ctx.jev.ask(QS_CLASSIFY, {"chunk": d["text"], "heading_path": heading_path_of(d["units"][0])},
-                                    "chunk", d["chunk_id"])
-            results.append(cls)
-            return False, cls.single
-
-        return list(await asyncio.gather(*(one(d) for d in drafts)))
+    async def _check_chunks(self, ctx: Context, doc_id: str, drafts: list[dict[str, Any]],
+                            results: list[AskResult]) -> list[Decision]:
+        """Jev's check of every chunk (injection, boilerplate, topic), a document's chunks packed per call.
+        A chunk longer than the check window would reach Jev truncated, its tail never checked for
+        injection: the document fails instead."""
+        cap = ctx.reg.policy("segment.chunks_per_call")
+        window = ctx.reg.policy("segment.chunk_state_tokens")
+        truncate = ctx.jev.provider.estimator.truncate
+        unseen = [d["chunk_id"] for d in drafts if truncate(d["text"], window, "head") != d["text"]]
+        if unseen:
+            raise ValueError(f"{doc_id}: {len(unseen)} chunk(s) exceed the {window}-token chunk check window")
+        out: list[Decision] = []
+        for i in range(0, len(drafts), cap):
+            items = {short_key(d["chunk_id"]): {"text": d["text"], "heading_path": heading_path_of(d["units"][0])}
+                     for d in drafts[i:i + cap]}
+            r = await ctx.jev.ask(QS_CHECK_FANOUT, {}, "chunk_batch", sha256_hex(doc_id, *items), fanout_items=items)
+            results.append(r)
+            by_item = r.by_item()
+            out.extend(by_item[key] for key in items)
+        return out
 
     async def process(self, ctx: Context, item: WorkItem) -> Writer:
         reg = ctx.reg
         doc_id = item.item_id
         units = await ctx.db.fetch("SELECT * FROM units WHERE doc_id = %s ORDER BY ord", (doc_id,))
         doc = await ctx.db.fetchone("SELECT corpus_id, title, meta FROM documents WHERE doc_id = %s", (doc_id,))
-        meta, applies_results = await self._derive_metadata(ctx, doc_id, doc["title"], units, chunk_metadata(reg, doc["meta"]))
-        cap = max_chunk_tokens(ctx)
-        cuts, keep, gap_results = await self._gap_cuts(ctx, doc_id, units, cap)
-        results: list[AskResult | None] = [*applies_results, *gap_results]
-        tokens = [u["tokens"] for u in units]
-        spans = [piece for s, e in runs(len(units), cuts) for piece in self._fit(tokens, keep, s, e, cap)]
+        meta, results = await self._derive_metadata(ctx, doc_id, doc["title"], units, chunk_metadata(reg, doc["meta"]))
 
         sep = reg.policy("segment.heading_separator")
         drafts: list[dict[str, Any]] = []
         prev_heading: list[str] = []
-        for s, e in spans:
+        for s, e in spans(units, max_chunk_tokens(ctx)):
             cu = units[s:e]
             text = DOC_JOIN.join(u["text"] for u in cu)
             drafts.append({"units": cu, "text": text, "prefix": sep.join(prev_heading) or None,
                            "chunk_id": sha256_hex(doc_id, cu[0]["unit_id"], cu[-1]["unit_id"], text)})
             prev_heading = heading_path_of(cu[-1])
 
-        checks = await self._check_chunks(ctx, doc_id, drafts, not triage_saw_all(ctx, units), results)
+        checks = await self._check_chunks(ctx, doc_id, drafts, results)
 
+        min_share = reg.policy("segment.role_min_share")
         chunk_rows: list[dict[str, Any]] = []
-        for ord_, (d, (injected, cls)) in enumerate(zip(drafts, checks, strict=True)):
+        for ord_, (d, check) in enumerate(zip(drafts, checks, strict=True)):
             cu = d["units"]
-            role = topic = density = boilerplate = None
-            if cls is not None:
-                density = cls.answers["density"]["score"]
-                boilerplate = ctx.flag_decision(cls, "boilerplate")
-                if cls.outcome == ACCEPT:
-                    role, topic = cls.answers["role"]["choice"], cls.answers["topic"]["choice"]
+            accepted = check.outcome == ACCEPT
             chunk_rows.append({
                 "chunk_id": d["chunk_id"], "corpus_id": doc["corpus_id"], "doc_id": doc_id, "ord": ord_,
                 "unit_ids": [u["unit_id"] for u in cu], "heading_path": heading_path_of(cu[0]), "text": d["text"],
-                "context_prefix": d["prefix"], "tokens": sum(u["tokens"] for u in cu), "role": role, "topic": topic,
-                "density": density, "boilerplate": boilerplate, "meta": meta, "status": "rejected" if injected else "accepted",
+                "context_prefix": d["prefix"], "tokens": sum(u["tokens"] for u in cu),
+                "role": structural_role(cu, min_share), "topic": check.answers["topic"]["choice"] if accepted else None,
+                "boilerplate": ctx.flag_decision(check, "boilerplate"), "meta": meta,
+                "status": "accepted" if accepted else "rejected",
                 "registry_version": ctx.registry_version, "created_run_id": ctx.run_id,
             })
 
@@ -359,7 +242,7 @@ class SegmentStage(Stage):
                 await conn.execute("UPDATE edges SET status = 'superseded' WHERE src_id = ANY(%s) OR dst_id = ANY(%s)", (stale_ids, stale_ids))
             # Chunk text is immutable per chunk_id; keep S3/S4 outputs if the row exists.
             await repo.upsert_many(conn, "chunks", chunk_rows, key=("chunk_id",),
-                                   update=("ord", "context_prefix", "role", "topic", "density", "boilerplate", "meta", "status",
+                                   update=("ord", "context_prefix", "role", "topic", "boilerplate", "meta", "status",
                                            "registry_version"))
             await repo.upsert_many(conn, "edges", edges, key=("edge_id",))
             await write_decisions(conn, *results)

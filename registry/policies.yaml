@@ -4,23 +4,21 @@
 question_sets:
   active:
     answerable: 1
-    audit_edge: 1
-    audit_orphan: 1
+    audit_edge: 2
+    audit_orphan: 2
     canonical_name: 1
-    chunk_classify: 1
-    chunk_check_fanout: 1
+    chunk_check_fanout: 2
     citation_check: 1
     chrome_selector: 1
     dedup: 1
-    doc_triage: 1
+    doc_triage: 2
     entity_align: 1
-    expand_gate: 1
+    expand_gate: 2
     extract_verify: 2
     extract_verify_fanout: 2
     harness_route: 2
-    injection: 1
-    link: 1
-    link_fanout: 1
+    link: 2
+    link_fanout: 2
     link_verify: 1
     lint_question: 1
     metadata_applies: 1
@@ -28,14 +26,12 @@ question_sets:
     metadata_field: 1
     ontology_support: 1
     query_route: 1
-    rag_passage: 1
+    rag_passage: 2
     relation_overlap: 1
     relation_support: 1
-    segment: 1
-    segment_fanout: 1
     span_locate: 2
-    summary_verify: 2
-    summary_verify_fanout: 2
+    summary_verify: 3
+    summary_verify_fanout: 3
     train_instruction: 1
     train_multihop: 1
     train_negative: 1
@@ -49,7 +45,7 @@ prompts:
     community_summary: 1
     continue_job: 1
     disambiguate_relations: 1
-    extract: 1
+    extract: 2
     gen_graph_reasoning: 1
     gen_instruction: 1
     gen_qa_multihop: 1
@@ -220,23 +216,21 @@ ingest:
   derivable_values_shown: 24
 
 segment:
-  window_units: 12
-  gaps_per_call: 8
   chunks_per_call: 8                # chunk_check_fanout: a document's chunks per call
   max_unit_tokens: 400
+  # Role (code): the structural kind (ordered list -> procedure, table -> reference, code -> example)
+  # holding more than this share of a chunk's non-heading tokens; a chunk of headings only is `heading`.
+  role_min_share: 0.5
   max_fraction: 1.0                 # chunk size cap as a fraction of the embedding window
   jev_state_share: 0.5
-  packing: fanout                   # fanout | single (§11.3)
   heading_separator: " > "
-  window_state_tokens: 3000
-  side_state_tokens: 400
   chunk_state_tokens: 1500
 
 extract:
   batch_chunks: 50
   ontology_file: ontology.json
   verify_concurrency: 8
-  packing: fanout                   # fanout | single: a chunk's entities, claims or summary pieces per call
+  packing: fanout                   # fanout | single: a chunk's entities, claims or title and keywords per call
   fanout_per_call: 8
   # Which extract_verify questions each kind is asked (§8.4 step 3: P(wrong) per field, type re-check,
   # support for claims only). `attributes_question` is asked only when the entity has attributes.
@@ -328,7 +322,7 @@ audit:
        subject_kind: mention, corpus_join: "JOIN chunks c ON c.chunk_id = t.chunk_id", corpus_filter: "c.corpus_id = %(corpus)s"}
     - {name: claims_verified, table: claims, id: claim_id, decisions_column: decision_ids, when: "true", question_sets: [extract_verify, extract_verify_fanout],
        subject_kind: claim, corpus_join: "JOIN chunks c ON c.chunk_id = t.chunk_id", corpus_filter: "c.corpus_id = %(corpus)s"}
-    - {name: chunk_summaries_verified, table: chunks, id: chunk_id, decisions_column: summary_decision_ids, when: "t.summary IS NOT NULL AND t.summary <> ''",
+    - {name: chunk_descriptors_verified, table: chunks, id: chunk_id, decisions_column: summary_decision_ids, when: "t.title IS NOT NULL OR cardinality(t.keywords) > 0",
        question_sets: [summary_verify, summary_verify_fanout], subject_kind: chunk, corpus_filter: "t.corpus_id = %(corpus)s"}
     - {name: community_summaries_verified, table: communities, id: community_id, decisions_column: decision_ids, when: "t.summary IS NOT NULL AND t.summary <> ''",
        question_sets: [citation_check], subject_kind: community, corpus_filter: "t.corpus_id = %(corpus)s"}
@@ -359,7 +353,6 @@ search:
   ef_search: 100
   rerank_candidates: 30
   relevance_question: relevant
-  injection_question: injection
   contradiction_question: contradicts
   # Each candidate is checked for contradiction against the texts of this many other top candidates (by RRF).
   contradiction_peers: 3

@@ -1,7 +1,7 @@
 ---
 name: extract
-version: 1
-purpose: "Extract entities, claims, a summary, a title and keywords from each chunk."
+version: 2
+purpose: "Extract entities, claims, a title and keywords from each chunk."
 inputs: [input_file, output_file, record_count, record_id_field, ontology_file]
 output_schema: extract_record
 output_mode: file
@@ -25,7 +25,6 @@ For every chunk, append one JSON line to `{{ output_file }}` with:
   value a string; use `{}` when the chunk states none.
 - `claims`: a list of `{text, claim_type, evidence_span}`. `evidence_span` must be copied character for
   character from the chunk text and must, on its own, support the claim.
-- `summary`: two or three plain sentences, each stated by the chunk.
 - `title`: a short heading for the chunk.
 - `keywords`: up to eight terms that occur in, or are directly stated by, the chunk.
 

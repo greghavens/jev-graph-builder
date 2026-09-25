@@ -23,10 +23,9 @@ YES, NO, SURE = 0.97, 0.02, 0.99
 
 # Questions whose "true" answer is the unusual case in a clean corpus.
 NO_QUESTIONS = {
-    ("injection", "contains_injection"), ("doc_triage", "injection"), ("rag_passage", "injection"),
     ("lint_question", "forbidden_task"), ("link", "contradiction"), ("link_fanout", "contradiction"),
     ("dedup", "same_question"), ("relation_overlap", "overlap"),
-    ("audit_orphan", "should_connect"), ("chunk_classify", "boilerplate"),
+    ("audit_orphan", "should_connect"),
     ("train_negative", "answers"), ("train_multihop", "answerable"), ("rag_passage", "contradicts"),
     ("entity_align", "same_referent"),
     *((qs, q) for qs in ("extract_verify", "extract_verify_fanout")
@@ -154,7 +153,7 @@ def fake_record(prompt: str, rec: dict[str, Any]) -> dict[str, Any]:
     if prompt == "extract":
         ents = [{"name": n, "type": t, "span": n, "attributes": {"kind": t}} for n, t in KNOWN_ENTITIES.items() if n in text]
         claims = [{"text": sentence, "claim_type": "behavior", "evidence_span": sentence}] if sentence in text else []
-        return {"id": rec["id"], "entities": ents, "claims": claims, "summary": sentence,
+        return {"id": rec["id"], "entities": ents, "claims": claims,
                 "title": text.splitlines()[0][:60] if text else "untitled", "keywords": [e["name"] for e in ents][:3]}
     if prompt == "gen_qa_single":
         return {"id": rec["id"], "question": f"What does the passage say about {sentence.split()[0]}?", "answer": sentence, "evidence": sentence}

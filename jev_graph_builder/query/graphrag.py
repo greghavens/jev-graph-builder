@@ -58,7 +58,7 @@ async def expand(ctx: Context, query: str, seeds: list[dict[str, Any]], plan: di
              "cap": plan["max_neighbors"]})
         rows = [r for r in rows if r["to_id"] not in nodes]
         texts = {r["chunk_id"]: r for r in await ctx.db.fetch(
-            "SELECT c.chunk_id, c.doc_id, c.ord, c.title, c.summary, c.text, c.heading_path, d.source_uri FROM chunks c "
+            "SELECT c.chunk_id, c.doc_id, c.ord, c.title, c.text, c.heading_path, d.source_uri FROM chunks c "
             "JOIN documents d ON d.doc_id = c.doc_id WHERE c.chunk_id = ANY(%s) AND c.status = 'accepted' AND NOT coalesce(d.quarantined, false)",
             ([r["to_id"] for r in rows] + [r["from_id"] for r in rows],))}
 
@@ -69,7 +69,7 @@ async def expand(ctx: Context, query: str, seeds: list[dict[str, Any]], plan: di
                 return r, None
             async with sem:
                 res = await ctx.jev.ask(QS_EXPAND, {
-                    "query": query, "from_chunk": {"title": src.get("title") or "", "summary": src.get("summary") or ""},
+                    "query": query, "from_chunk": {"title": src.get("title") or "", "text": src.get("text") or ""},
                     "relation": {"name": rel["name"], "definition": rel["definition"]},
                     "neighbor": {"title": dst["title"] or "", "text": dst["text"]}}, "expansion", sha256_hex(query, r["edge_id"], r["to_id"]))
             return r, res.single

@@ -1,6 +1,6 @@
 """Semantic search (§9.1): ANN + full-text → RRF fusion (code) → Jev rerank.
 
-No harness call is made. Candidates the injection Noul flags are dropped.
+No harness call is made. Injection-flagged chunks were rejected in S2 and are never candidates.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ from typing import Any
 import numpy as np
 
 from jev_graph_builder.ids import sha256_hex
-from jev_graph_builder.jev.gating import says_yes
 from jev_graph_builder.jev.service import Decision
 from jev_graph_builder.pipeline.common import Context, write_decisions
 
@@ -34,7 +33,6 @@ class Hit:
     score: float = 0.0
     probabilities: dict[str, float] = field(default_factory=dict)
     decision_id: str | None = None
-    injection: bool | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return dict(self.__dict__)
@@ -92,10 +90,9 @@ async def candidates(ctx: Context, query: str, filters: dict[str, Any] | None = 
 
 
 async def rerank(ctx: Context, query: str, hits: list[Hit]) -> tuple[list[Hit], list[Decision]]:
-    """Jev `QS.rag_passage` per candidate, concurrently; drop injection-flagged passages."""
+    """Jev `QS.rag_passage` per candidate, concurrently."""
     pol = ctx.reg.policy("search")
     sem = asyncio.Semaphore(ctx.reg.policy("run.concurrency.search"))
-    q_inj = pol["injection_question"]
 
     by_rrf = sorted(hits, key=lambda h: (-h.rrf, h.chunk_id))
 
@@ -109,17 +106,12 @@ async def rerank(ctx: Context, query: str, hits: list[Hit]) -> tuple[list[Hit], 
         return r.single
 
     decisions = await asyncio.gather(*(one(h) for h in hits))
-    kept = []
     for h, d in zip(hits, decisions, strict=True):
         h.decision_id = d.decision_id
         h.probabilities = {q: a["p"] for q, a in d.answers.items() if a["type"] == "noul"}
-        h.injection = says_yes(d.answers[q_inj], d.threshold_for(q_inj))
         h.score = composite(d.answers, pol["weights"])
-        if h.injection:
-            continue
-        kept.append(h)
-    kept.sort(key=lambda h: (-h.score, -h.rrf, h.chunk_id))
-    return kept, list(decisions)
+    ranked = sorted(hits, key=lambda h: (-h.score, -h.rrf, h.chunk_id))
+    return ranked, list(decisions)
 
 
 async def search(ctx: Context, query: str, k: int | None = None, filters: dict[str, Any] | None = None) -> dict[str, Any]:

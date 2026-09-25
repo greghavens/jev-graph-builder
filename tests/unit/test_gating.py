@@ -60,11 +60,10 @@ def test_if_asked_leaf_is_vacuous_when_question_skipped(reg):
     assert evaluate(qs, {**answers, "span_wrong": noul(0.999)}, bar(reg)).outcome == REJECT
 
 
-def test_all_gating_questions_skipped_is_accept(reg):
-    """S2 skips the chunk injection question when triage saw the whole document: Jev rejected nothing."""
+def test_chunk_check_rejects_exactly_the_chunks_jev_flags_for_injection(reg):
+    """S2 asks every chunk the injection question; only Jev's yes rejects it (boilerplate and topic do not)."""
     qs = reg.question_set("chunk_check_fanout")
-    rest = {"role": choice("overview", 0.9), "topic": choice("general", 0.9), "density": score(2, 4), "boilerplate": noul(0.1)}
-    assert evaluate(qs, rest, bar(reg)).outcome == ACCEPT
+    rest = {"topic": choice("general", 0.9), "boilerplate": noul(0.9)}
     assert evaluate(qs, {**rest, "contains_injection": noul(0.9)}, bar(reg)).outcome == REJECT
     assert evaluate(qs, {**rest, "contains_injection": noul(0.1)}, bar(reg)).outcome == ACCEPT
 

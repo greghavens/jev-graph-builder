@@ -348,6 +348,31 @@ class JevService:
         if not flight.cancelled():
             flight.exception()  # retrieved here too: every caller may have been cancelled
 
+    async def _reuse(
+        self, qs: QuestionSet, state_hash: str, batch: dict[str, dict], keys: dict[str, list],
+    ) -> tuple[RawResult, str, str, bool] | None:
+        """A stored call of this question set (any version) on the same state, by the same model, that asked
+        every question in `batch` word for word: its answers are this call's. So a version that only removes
+        questions re-asks nothing; a reworded question, a changed option list or a new question is asked."""
+        rows = await self.db.fetch(
+            "SELECT call_id, questions, keys, answers, jev_model, provider FROM jev_calls "
+            "WHERE question_set = %s AND state_hash = %s AND provider = %s AND jev_model = %s AND NOT drift "
+            "ORDER BY created_at",
+            (qs.name, state_hash, self.provider.name, self.provider.model),
+        )
+        for row in rows:
+            stored = {tuple(v): k for k, v in (row["keys"] or {}).items()}
+            answers: dict[str, Any] = {}
+            for key, question in batch.items():
+                old = stored.get(tuple(keys[key]))
+                if old is None or row["questions"].get(old) != question or old not in row["answers"]:
+                    break
+                answers[key] = row["answers"][old]
+            else:
+                log.get().info("jev_call_reused", question_set=qs.ref, call_id=row["call_id"], questions=len(batch))
+                return RawResult(answers, row["jev_model"], {}, None, 0, row["provider"]), row["call_id"], row["provider"], True
+        return None
+
     async def _cached_or_paid(
         self, qs: QuestionSet, state: Any, state_hash: str, batch: dict[str, dict], keys: dict[str, list], bypass_cache: bool,
         dynamic: dict[str, dict[str, Any]] | None, cache_key: str,
@@ -361,6 +386,9 @@ class JevService:
             if row is not None:
                 raw = RawResult(row["answers"], row["jev_model"], row["usage"] or {}, None, 0, row["provider"])
                 return raw, row["call_id"], row["provider"], True
+            reused = await self._reuse(qs, state_hash, batch, keys)
+            if reused is not None:
+                return reused
 
         tokens = self.provider.estimator.value({"state": state, "questions": batch})
         await self.provider.limiter.acquire(tokens)

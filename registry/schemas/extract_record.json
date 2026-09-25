@@ -73,9 +73,6 @@
         "additionalProperties": false
       }
     },
-    "summary": {
-      "type": "string"
-    },
     "title": {
       "type": "string"
     },
