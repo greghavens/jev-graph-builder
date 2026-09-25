@@ -32,7 +32,6 @@ from jev_graph_builder.embed.base import EmbeddingProvider
 from jev_graph_builder.harness.base import HarnessUsageLimit
 from jev_graph_builder.harness.jobs import JobRunner
 from jev_graph_builder.ids import sha256_hex, unit_fraction
-from jev_graph_builder.jev.client import JevCreditsExhausted
 from jev_graph_builder.jev.gating import says_yes
 from jev_graph_builder.jev.service import AskResult, Decision, JevService
 from jev_graph_builder.ledger.ledger import DONE, REVIEW, Ledger, WorkItem
@@ -44,7 +43,8 @@ Writer = Callable[[AsyncConnection], Awaitable[str]]
 
 
 # Conditions that stop the whole run (not one item): unfinished items are released, never failed.
-RUN_STOPS = (JevCreditsExhausted, HarnessUsageLimit)
+# (A Jev credits outage does not stop the run: Jev calls wait for credits in the Jev service.)
+RUN_STOPS = (HarnessUsageLimit,)
 
 
 @dataclass(frozen=True)

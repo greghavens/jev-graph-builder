@@ -59,6 +59,7 @@ jev:
   untrusted_field: data             # untrusted text is wrapped under this key (§11.4)
   default_truncation: head_tail
   store_state: true                 # keep the sent state in jev_calls for audit and drift
+  credits_wait_s: 60                # out of credits: Jev calls wait, retrying this often, until credits are back
   retry:
     max_retries: 6
     backoff_initial_s: 0.5

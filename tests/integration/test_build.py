@@ -375,3 +375,84 @@ async def test_enrich_fails_chunks_without_extraction_and_stops_on_a_usage_limit
     assert rows and not any(status == "done" for status, _ in rows), rows
     assert sum(1 for _, err in rows if err and "ExtractionMissing" in err) == 1, rows
     assert written == 0
+
+
+async def test_a_jev_credits_outage_queues_calls_until_credits_return(
+        env: Harnessed, docs: list[Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Out of Jev credits, the run does not stop: Jev calls wait until credits are back, extraction
+    jobs already running are not lost or repeated, and every chunk is finished."""
+    import asyncio
+
+    monkeypatch.setenv(CONFIG_FILE_ENV, str(tmp_path / "jev-graph-builder.yaml"))
+    write_config(env.settings.model_dump(mode="json"))
+    src = [str(docs[0].parent)]
+    assert (await Builder(src, None, lambda _k, _s: True, "tester", open_ctx=_opener(env), stop_after="segment").run()).stopped
+
+    policy = Registry.policy
+    small = {"extract.batch_chunks": 1, "run.concurrency.harness_jobs": 2, "jev.credits_wait_s": 0.05}
+    monkeypatch.setattr(Registry, "policy", lambda self, key: small[key] if key in small else policy(self, key))
+    run = env.harness.run
+    jobs: list[Path] = []
+
+    async def outage_during_first_job(spec: Any) -> Any:
+        if env.harness.reg.prompt(spec.prompt_ref).name == "extract":
+            jobs.append(spec.workspace)
+            if len(jobs) == 1:
+                env.fake_jev.no_credits = True
+                asyncio.get_running_loop().call_later(0.5, setattr, env.fake_jev, "no_credits", False)
+        return await run(spec)
+
+    monkeypatch.setattr(env.harness, "run", outage_during_first_job)
+    report = await Builder(src, None, lambda _k, _s: True, "tester", open_ctx=_opener(env), stop_after="enrich").run()
+
+    enrich = {r["stage"]: r for r in report.phases["graph"]["stages"]}["enrich"]
+    assert env.fake_jev.refused > 0
+    assert not report.stopped or report.stopped.get("reason") == STOPPED_AS_ASKED, report.stopped
+    assert enrich["failed"] == 0 and not enrich["paused"] and enrich["done"] == enrich["selected"], enrich
+    assert len(jobs) == len(set(jobs)), "an extraction job ran twice"
+
+
+async def test_a_stop_lets_running_extraction_finish_and_a_resume_reuses_it(
+        env: Harnessed, docs: list[Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A harness usage limit stops the run: queued jobs do not start, but a job already running finishes
+    and is recorded, and the resumed run takes its output instead of paying for it again."""
+    import asyncio
+
+    from jev_graph_builder.harness.base import HarnessUsageLimit
+
+    monkeypatch.setenv(CONFIG_FILE_ENV, str(tmp_path / "jev-graph-builder.yaml"))
+    write_config(env.settings.model_dump(mode="json"))
+    src = [str(docs[0].parent)]
+    assert (await Builder(src, None, lambda _k, _s: True, "tester", open_ctx=_opener(env), stop_after="segment").run()).stopped
+
+    policy = Registry.policy
+    small = {"extract.batch_chunks": 1, "run.concurrency.harness_jobs": 2}
+    monkeypatch.setattr(Registry, "policy", lambda self, key: small[key] if key in small else policy(self, key))
+    run = env.harness.run
+    jobs: list[Path] = []
+
+    async def slow_then_limited(spec: Any) -> Any:
+        if env.harness.reg.prompt(spec.prompt_ref).name != "extract":
+            return await run(spec)
+        jobs.append(spec.workspace)
+        if len(jobs) == 1:
+            await asyncio.sleep(0.5)  # still running when the limit stops the run
+            return await run(spec)
+        raise HarnessUsageLimit("five_hour usage limit, resets at 1790268600")
+
+    monkeypatch.setattr(env.harness, "run", slow_then_limited)
+    report = await Builder(src, None, lambda _k, _s: True, "tester", open_ctx=_opener(env), stop_after="enrich").run()
+
+    assert report.stopped and "HarnessUsageLimit" in str(report.stopped), report.stopped
+    assert len(jobs) == 2, jobs  # the running job and the limited one; nothing queued started
+    async with await psycopg.AsyncConnection.connect(env.settings.dsn) as conn:
+        cur = await conn.execute("SELECT ok, ended_at IS NOT NULL FROM harness_runs WHERE workspace = %s", (str(jobs[0]),))
+        assert await cur.fetchall() == [(True, True)]
+
+    monkeypatch.setattr(env.harness, "run", run)
+    before = len(env.harness.runs)
+    report = await Builder(src, None, lambda _k, _s: True, "tester", open_ctx=_opener(env), stop_after="enrich").run()
+
+    enrich = {r["stage"]: r for r in report.phases["graph"]["stages"]}["enrich"]
+    assert enrich["failed"] == 0 and not enrich["paused"], enrich
+    assert jobs[0] not in [s.workspace for s in env.harness.runs[before:]], "the finished job was paid for again"

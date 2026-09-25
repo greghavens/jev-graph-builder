@@ -22,7 +22,7 @@ from pydantic import ValidationError
 
 from jev_graph_builder import log
 from jev_graph_builder.ids import sha256_hex, short_key
-from jev_graph_builder.jev.client import JevProvider, JevRequestError, RawResult
+from jev_graph_builder.jev.client import JevCreditsExhausted, JevProvider, JevRequestError, RawResult
 from jev_graph_builder.jev.gating import Bar, evaluate
 from jev_graph_builder.jev.questions import QuestionBuilder, Rendered, normalize_answer
 from jev_graph_builder.jev.state import StateBuilder
@@ -116,6 +116,8 @@ class JevService:
         self.questions = QuestionBuilder(registry, self.profile["limits"])
         self.store_state = registry.policy("jev.store_state")
         self._in_flight: dict[str, asyncio.Future[tuple[RawResult, str, str, bool]]] = {}
+        self._credits = asyncio.Event()  # cleared while the account has no credits
+        self._credits.set()
 
     # ------------------------------------------------------------------ public
 
@@ -373,6 +375,31 @@ class JevService:
                 return RawResult(answers, row["jev_model"], {}, None, 0, row["provider"]), row["call_id"], row["provider"], True
         return None
 
+    async def _call_when_credited(self, state: Any, batch: dict[str, dict]) -> RawResult:
+        """Out of credits, calls queue instead of failing: the call that hit the outage retries on an
+        interval while every other call waits for it, and all of them go ahead once credits are back."""
+        while True:
+            await self._credits.wait()
+            try:
+                return await self.provider.call(state, batch)
+            except JevCreditsExhausted as exc:
+                if not self._credits.is_set():
+                    continue  # another call is already waiting for the credits
+                self._credits.clear()
+                wait_s = self.reg.policy("jev.credits_wait_s")
+                log.get().warning("jev_credits_exhausted_waiting", error=str(exc), retry_every_s=wait_s)
+                try:
+                    while True:
+                        await asyncio.sleep(wait_s)
+                        try:
+                            raw = await self.provider.call(state, batch)
+                        except JevCreditsExhausted:
+                            continue
+                        log.get().warning("jev_credits_restored")
+                        return raw
+                finally:
+                    self._credits.set()
+
     async def _cached_or_paid(
         self, qs: QuestionSet, state: Any, state_hash: str, batch: dict[str, dict], keys: dict[str, list], bypass_cache: bool,
         dynamic: dict[str, dict[str, Any]] | None, cache_key: str,
@@ -392,7 +419,7 @@ class JevService:
 
         tokens = self.provider.estimator.value({"state": state, "questions": batch})
         await self.provider.limiter.acquire(tokens)
-        raw = await self.provider.call(state, batch)
+        raw = await self._call_when_credited(state, batch)
         # Drift samples get their own call row so they never overwrite (or serve as) the cache.
         call_id = sha256_hex(cache_key, "drift", self.run_id or "") if bypass_cache else cache_key
         if self.db is not None:

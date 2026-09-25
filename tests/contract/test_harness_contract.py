@@ -202,3 +202,36 @@ async def test_codex_failure_before_thread_start_has_no_session(tmp_path: Path, 
 
 def test_fake_cli_is_executable(tmp_path: Path) -> None:
     assert os.access(_fake_cli(tmp_path, "x", []), os.X_OK)
+
+
+async def test_a_cancelled_run_ends_the_harness_process(tmp_path: Path, reg: Registry) -> None:
+    """Cancelling the caller kills the CLI process group, so no harness keeps running unrecorded."""
+    import asyncio
+
+    pid_file = tmp_path / "pid"
+    script = tmp_path / "slow"
+    script.write_text(f"#!{sys.executable}\nimport os, time\nopen({str(pid_file)!r}, 'w').write(str(os.getpid()))\ntime.sleep(60)\n")
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    adapter = ClaudeCodeAdapter(reg, binary=str(script))
+    task = asyncio.ensure_future(adapter.spawn([str(script)], tmp_path, dict(os.environ), 120, tmp_path / "events.jsonl"))
+    for _ in range(100):
+        if pid_file.exists() and pid_file.read_text():
+            break
+        await asyncio.sleep(0.05)
+    pid = int(pid_file.read_text())
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    def alive() -> bool:
+        try:
+            state = Path(f"/proc/{pid}/stat").read_text().split(")")[-1].split()[0]
+        except FileNotFoundError:
+            return False
+        return state != "Z"
+
+    for _ in range(100):
+        if not alive():
+            break
+        await asyncio.sleep(0.05)
+    assert not alive()

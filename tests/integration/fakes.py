@@ -55,6 +55,8 @@ class FakeJev:
         self.overrides = overrides or {}
         self.calls: list[dict[str, Any]] = []
         self.fail_next: int = 0  # simulate an outage for N calls
+        self.no_credits = False  # simulate an account with no credits: every call answers 402
+        self.refused = 0  # calls answered 402
 
     def candidates(self, instructions: str) -> dict[str, str]:
         found = {qs: logical for pat, qs, logical in self.index if pat.match(instructions)}
@@ -96,6 +98,9 @@ class FakeJev:
             if self.fail_next > 0:
                 self.fail_next -= 1
                 return httpx2.Response(503, json={"error": {"message": "unavailable"}})
+            if self.no_credits:
+                self.refused += 1
+                return httpx2.Response(402, json={"error": {"message": "Your organization has no available TypeSafe API credits."}})
             payload = json.loads(request.content)
             self.calls.append(payload)
             ident = self.identify_call(payload["questions"])

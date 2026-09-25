@@ -37,7 +37,8 @@ from jev_graph_builder.jev.service import AskResult, Decision
 from jev_graph_builder.ledger.ledger import DONE, REVIEW, WorkItem
 from jev_graph_builder.pipeline.citations import check_sentences
 from jev_graph_builder.pipeline.common import (
-    Context, Deps, RunOptions, RunReport, Stage, Writer, enqueue_review, pending_in, run_single_item, write_decisions,
+    RUN_STOPS, Context, Deps, RunOptions, RunReport, Stage, Writer, enqueue_review, pending_in, run_single_item,
+    write_decisions,
 )
 from jev_graph_builder.pipeline.grounding import UNGROUNDED, ground
 from jev_graph_builder.pipeline.s6_links import relation_definitions
@@ -220,6 +221,7 @@ class TrainingStage(Stage):
         for i in enumerated:
             by_tpl[i.payload["template"]].append(i)
         sem = asyncio.Semaphore(ctx.reg.policy("run.concurrency.harness_jobs"))
+        stopped: list[BaseException] = []
 
         async def run(group: list[WorkItem], todo_items: list[WorkItem]) -> None:
             name = group[0].payload["template"]
@@ -237,18 +239,32 @@ class TrainingStage(Stage):
                     if k in r:
                         r[k] = {"id": r[k], "text": texts.get(r[k], "")}
             async with sem:
-                profile = await ctx.jobs.choose_profile(name, {"records": records, "prompt": tpl["prompt"]})
-                by_item = {i.item_id: r for i, r in zip(group, records, strict=True)}
-                todo = [by_item[i.item_id] for i in todo_items]
-                cap = ctx.reg.profile("harness", profile).get("max_batch_records") or len(todo)
-                for start in range(0, len(todo), cap):
-                    part = todo[start: start + cap]
-                    outcome = await ctx.jobs.run_job(name, tpl["prompt"], part, profile, variables={"template": tpl})
-                    for r in part:
-                        run_id = outcome.harness_run_ids[-1] if outcome.harness_run_ids else None
-                        cache[f"{name}:{r['id']}"] = (outcome.records.get(r["id"]), profile, outcome.missing.get(r["id"], ""), run_id)
+                if stopped:
+                    return  # the run is stopping: queued jobs do not start
+                try:
+                    await run_template(name, tpl, group, records, todo_items)
+                except RUN_STOPS as exc:
+                    stopped.append(exc)
 
-        await asyncio.gather(*(run(b, todo) for b, todo in pending_in(list(by_tpl.values()), items)))
+        async def run_template(name: str, tpl: dict[str, Any], group: list[WorkItem], records: list[dict[str, Any]],
+                               todo_items: list[WorkItem]) -> None:
+            profile = await ctx.jobs.choose_profile(name, {"records": records, "prompt": tpl["prompt"]})
+            by_item = {i.item_id: r for i, r in zip(group, records, strict=True)}
+            todo = [by_item[i.item_id] for i in todo_items]
+            cap = ctx.reg.profile("harness", profile).get("max_batch_records") or len(todo)
+            for start in range(0, len(todo), cap):
+                part = todo[start: start + cap]
+                outcome = await ctx.jobs.run_job(name, tpl["prompt"], part, profile, variables={"template": tpl})
+                for r in part:
+                    run_id = outcome.harness_run_ids[-1] if outcome.harness_run_ids else None
+                    cache[f"{name}:{r['id']}"] = (outcome.records.get(r["id"]), profile, outcome.missing.get(r["id"], ""), run_id)
+
+        # Every started job finishes (its output and harness run are kept for a resume) before a stop is raised.
+        results = await asyncio.gather(*(run(b, todo) for b, todo in pending_in(list(by_tpl.values()), items)),
+                                       return_exceptions=True)
+        errors = [r for r in results if isinstance(r, BaseException)]
+        if stopped or errors:
+            raise (stopped or errors)[0]
 
     # ------------------------------------------------------------- filters
 

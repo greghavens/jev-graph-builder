@@ -22,7 +22,6 @@ from typing import Any
 from jev_graph_builder.app import runtime
 from jev_graph_builder.config import Settings, write_config
 from jev_graph_builder.harness.base import HarnessUsageLimit
-from jev_graph_builder.jev.client import JevCreditsExhausted
 from jev_graph_builder.pipeline.common import RUN_STOPS, Context, RunOptions, ensure_corpus, run_stage
 from jev_graph_builder.registry import gate
 from jev_graph_builder.registry.gate import BOOTSTRAP_KIND
@@ -39,7 +38,7 @@ Progress = Callable[[str, dict[str, Any]], None]
 OpenContext = Callable[[Settings, str | None], AbstractAsyncContextManager[Context]]
 
 
-STOP_REASONS = {JevCreditsExhausted: "jev_credits_exhausted", HarnessUsageLimit: "harness_usage_limit"}
+STOP_REASONS = {HarnessUsageLimit: "harness_usage_limit"}
 
 
 @dataclass

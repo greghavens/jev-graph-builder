@@ -38,8 +38,8 @@ class JevRequestError(Exception):
 
 
 class JevCreditsExhausted(Exception):
-    """The Jev account has no credits (402): every call fails until credits are added, so the
-    build stops and leaves unfinished items pending instead of failing them one by one."""
+    """The Jev account has no credits (402): every call fails until credits are added, so the Jev
+    service holds calls in its queue until they succeed again."""
 
 
 @dataclass

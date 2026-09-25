@@ -40,6 +40,10 @@ class ExtractionMissing(Exception):
     """The extraction job produced no valid record for this chunk."""
 
 
+class RunStopped(Exception):
+    """The stage ended while this extraction job was still queued; it never started."""
+
+
 @dataclass
 class Descriptors:
     """Jev-verified chunk descriptors (the parts of the harness record that were accepted)."""
@@ -139,12 +143,14 @@ class EnrichStage(Stage):
             tasks.append(asyncio.ensure_future(run(b, todo)))
 
     async def cleanup(self, ctx: Context) -> None:
-        """Stop the jobs no chunk will wait for any more (a stopped run) and settle their results."""
+        """A stopped run starts no more jobs, but lets running ones finish: their output stays in the job
+        workspace and their harness run is recorded, so a resume reuses the work instead of paying for it again."""
         tasks: list[asyncio.Task[None]] = ctx.cache.pop(TASKS_KEY, [])
-        ctx.cache.pop(STOP_KEY, None)
-        for t in tasks:
-            t.cancel()
+        stopped: list[BaseException] = ctx.cache.setdefault(STOP_KEY, [])
+        if not stopped:
+            stopped.append(RunStopped("stage stopped"))
         await asyncio.gather(*tasks, return_exceptions=True)
+        ctx.cache.pop(STOP_KEY, None)
         for f in ctx.cache.pop(READY_KEY, {}).values():
             if f.done() and not f.cancelled():
                 f.exception()

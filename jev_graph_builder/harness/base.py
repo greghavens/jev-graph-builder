@@ -208,6 +208,9 @@ class HarnessBase:
             timed_out = True
             _kill(proc)
             await proc.wait()
+        except BaseException:
+            _kill(proc)  # a cancelled or failed caller never leaves the harness running unrecorded
+            raise
         stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace")
         (events_path.parent / STDERR_FILE).write_text(stderr, encoding="utf-8")
         return ProcOutput(returncode=proc.returncode, events=events, timed_out=timed_out, stderr_tail=stderr[-2000:])
