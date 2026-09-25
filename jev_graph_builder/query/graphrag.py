@@ -1,5 +1,7 @@
-"""Graph RAG (§9.2): Jev routes, code retrieves and expands (Jev-gated), a
-read-only harness answers, Jev citation-checks every sentence."""
+"""Graph RAG (§9.2): Jev routes, code retrieves and expands (Jev-gated), Jev
+decides the passages can answer. `context` stops there and returns the cited
+passages (what a coding-agent session gets over MCP); `ask` goes on: a read-only
+harness answers and Jev citation-checks every sentence."""
 
 from __future__ import annotations
 
@@ -22,7 +24,7 @@ GROUNDING_OK, GROUNDING_LOW = "ok", "low"
 
 async def route(ctx: Context, query: str) -> tuple[str, dict[str, Any], Decision]:
     pol = ctx.reg.policy("query")
-    r = await ctx.jev.ask(QS_ROUTE, {"query": query}, "query", sha256_hex(query))
+    r = await ctx.jev.ask(QS_ROUTE, {"query": query, "corpus": {"scope": ctx.reg.corpus["scope"]}}, "query", sha256_hex(query))
     d = r.single
     intent = d.answers[pol["intent_question"]]["choice"]
     if d.outcome != ACCEPT:  # Jev said no: the policy's default plan
@@ -108,7 +110,8 @@ def assemble(ctx: Context, nodes: dict[str, dict[str, Any]], communities: list[d
             continue
         used += tokens
         cid = f"{ctx.reg.policy('query.citation_prefix')}{len(passages) + 1}"
-        passages[cid] = {"kind": kind, "id": ident, "text": text, "source_uri": src.get("source_uri"), "doc_id": src.get("doc_id")}
+        passages[cid] = {"kind": kind, "id": ident, "text": text, "source_uri": src.get("source_uri"), "doc_id": src.get("doc_id"),
+                         "title": src.get("title"), "heading_path": src.get("heading_path")}
     return passages
 
 
@@ -124,37 +127,63 @@ async def answer(ctx: Context, query: str, plan: dict[str, Any], passages: dict[
     return result.structured, run_id, profile
 
 
-async def ask(ctx: Context, query: str) -> dict[str, Any]:
-    pol = ctx.reg.policy("query")
-    intent, plan, route_d = await route(ctx, query)
+async def context(ctx: Context, query: str, max_tokens: int | None = None,
+                  routed: tuple[str, dict[str, Any], Decision] | None = None) -> dict[str, Any]:
+    """Route (unless `routed` is given), seed, expand and assemble the cited passages for `query`, capped at
+    `max_tokens` (default: policy `query.context_tokens`). `answerable` is Jev's decision; when it is no, no passages
+    are returned. The decisions made here are persisted here."""
+    intent, plan, route_d = routed or await route(ctx, query)
     decisions: list[Decision] = [route_d]
+    out: dict[str, Any] = {"query": query, "intent": intent, "plan": plan, "answerable": False, "passages": {},
+                           "subgraph": {"nodes": [], "edges": []}}
     if plan.get("out_of_scope"):
         await persist(ctx, decisions)
-        return {"query": query, "intent": intent, "unanswerable": True, "answer": [], "citations": {}, "subgraph": {"nodes": [], "edges": []},
-                "grounding": GROUNDING_OK, "decision_ids": [route_d.decision_id]}
+        return {**out, "decisions": decisions}
     hits = await candidates(ctx, query)
     ranked, rerank_d = await rerank(ctx, query, hits)
     decisions.extend(rerank_d)
-    seeds = [{"chunk_id": h.chunk_id, "doc_id": h.doc_id, "text": h.text, "title": h.title, "source_uri": h.source_uri}
-             for h in ranked[: plan["k_seeds"]]]
+    seeds = [{"chunk_id": h.chunk_id, "doc_id": h.doc_id, "text": h.text, "title": h.title, "heading_path": h.heading_path,
+              "source_uri": h.source_uri} for h in ranked[: plan["k_seeds"]]]
     nodes, edges, exp_d = await expand(ctx, query, seeds, plan)
     decisions.extend(exp_d)
     comms = await communities_for(ctx, list(nodes)) if plan.get("use_communities") else []
-    answer_tokens = ctx.reg.profile("harness", plan.get("answer_profile") or ctx.reg.policy(f"harness.defaults.{PROMPT_ANSWER}"))["context_tokens"]
-    passages = assemble(ctx, nodes, comms, answer_tokens)
+    passages = assemble(ctx, nodes, comms, max_tokens or ctx.reg.policy("query.context_tokens"))
     texts = {k: v["text"] for k, v in passages.items()}
-    # Jev, not the harness, decides whether the passages can answer the query.
+    # Jev, not the harness or the session, decides whether the passages can answer the query.
     gate = await ctx.jev.ask(QS_ANSWERABLE, {"query": query, "passages": [{"id": k, "text": t} for k, t in texts.items()]},
                              "query", sha256_hex(query, sorted(texts)))
     decisions.append(gate.single)
-    if not texts or gate.single.outcome == REJECT:
-        await persist(ctx, decisions)
+    await persist(ctx, decisions)
+    out["subgraph"] = {"nodes": sorted(nodes), "edges": edges}
+    if texts and gate.single.outcome != REJECT:
+        out.update(answerable=True, passages=passages)
+    return {**out, "decisions": decisions}
+
+
+def public(result: dict[str, Any]) -> dict[str, Any]:
+    """A `context` result as returned to callers: decisions become their IDs, the internal plan is dropped."""
+    out = {k: v for k, v in result.items() if k not in ("decisions", "plan")}
+    out["decision_ids"] = [d.decision_id for d in result["decisions"]]
+    return out
+
+
+async def ask(ctx: Context, query: str) -> dict[str, Any]:
+    pol = ctx.reg.policy("query")
+    routed = await route(ctx, query)
+    intent, plan = routed[0], routed[1]
+    answer_tokens = ctx.reg.profile("harness", plan.get("answer_profile") or ctx.reg.policy(f"harness.defaults.{PROMPT_ANSWER}"))["context_tokens"]
+    found = await context(ctx, query, answer_tokens, routed)
+    nodes, edges = found["subgraph"]["nodes"], found["subgraph"]["edges"]
+    decisions: list[Decision] = list(found["decisions"])
+    passages = found["passages"]
+    texts = {k: v["text"] for k, v in passages.items()}
+    if not found["answerable"]:
         return {"query": query, "intent": intent, "unanswerable": True, "answer": [], "citations": {},
-                "subgraph": {"nodes": sorted(nodes), "edges": edges}, "grounding": GROUNDING_OK,
-                "decision_ids": [d.decision_id for d in decisions]}
+                "subgraph": found["subgraph"], "grounding": GROUNDING_OK, "decision_ids": [d.decision_id for d in decisions]}
 
     out, run_id, profile = await answer(ctx, query, plan, passages)
     runs = [run_id]
+    persisted = len(decisions)
     check = await check_sentences(ctx.jev, out.get("answer_sentences", []), texts, ctx.reg.policy("run.concurrency.citation_check"), query)
     decisions.extend(check.decisions)
     if check.failed and pol["on_citation_fail"] == "regenerate":
@@ -164,14 +193,14 @@ async def ask(ctx: Context, query: str) -> dict[str, Any]:
         decisions.extend(check2.decisions)
         out, check = out2, check2
     grounding = GROUNDING_LOW if check.fail_fraction > pol["max_failed_fraction"] else GROUNDING_OK
-    await persist(ctx, decisions)
+    await persist(ctx, decisions[persisted:])
     cited = {c for s in check.kept for c in s.get("citation_ids") or []}
     return {
         "query": query, "intent": intent, "unanswerable": not check.kept,
         "answer": [{"text": s["text"], "citation_ids": s["citation_ids"], "decision_id": s["decision_id"]} for s in check.kept],
         "dropped_sentences": check.failed, "grounding": grounding,
         "citations": {k: v for k, v in passages.items() if k in cited},
-        "subgraph": {"nodes": sorted(nodes), "edges": edges},
+        "subgraph": {"nodes": nodes, "edges": edges},
         "harness": {"profile": profile, "harness_run_ids": runs},
         "decision_ids": [d.decision_id for d in decisions],
     }

@@ -25,7 +25,7 @@ question_sets:
     metadata_derivable: 1
     metadata_field: 1
     ontology_support: 1
-    query_route: 1
+    query_route: 2
     rag_passage: 2
     relation_overlap: 1
     relation_support: 1
@@ -366,6 +366,8 @@ query:
   fallback_intent: lookup
   query_state_tokens: 300
   citation_state_tokens: 2500
+  context_tokens: 8000              # cap on the passages `context` returns (MCP graph_context); `ask` uses its answer profile's
+  mcp_instructions: "Knowledge-graph context built from these documents. Call graph_context with the user's question before answering a question they cover, and cite the passage IDs (p1, p2, ...) you use. The documents cover:"
   citation_prefix: p
   max_failed_fraction: 0.3
   on_citation_fail: regenerate      # regenerate | drop

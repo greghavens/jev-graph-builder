@@ -78,10 +78,72 @@ Keep the TypeSafe key in the environment, not in this file.
 ```bash
 jev-graph-builder status                  # progress, counts and failures per stage
 jev-graph-builder search "how do retries work" -k 10
-jev-graph-builder serve                   # HTTP API
+jev-graph-builder serve --port 8080       # HTTP API
 ```
 
 Every command prints JSON on stdout. Progress and logs go to stderr.
+
+## Use the graph in Claude Code, Codex or OpenCode
+
+`jev-graph-builder mcp` is an MCP server with two tools:
+
+- `graph_context`: takes a question and returns cited passages (`p1`, `p2`, ...). Each has its text, heading path and source file, found by search and then by following the graph's verified links. Jev decides whether they can answer the question; if not, `answerable` is false and no passages come back. The agent session writes the answer itself.
+- `search`: ranked chunks for a query, without following links.
+
+The server needs the directory you ran `build` in (its `jev-graph-builder.yaml` and `registry/`) and your TypeSafe key. In the examples, replace `/path/to/build-dir` with that directory and `/path/to/jev-graph-builder` with where you installed this tool.
+
+**Claude Code**: `.mcp.json` in your project:
+
+```json
+{
+  "mcpServers": {
+    "jev-graph": {
+      "type": "stdio",
+      "command": "/path/to/jev-graph-builder/.venv/bin/jev-graph-builder",
+      "args": ["mcp"],
+      "env": {
+        "JEV_GRAPH_BUILDER_CONFIG": "/path/to/build-dir/jev-graph-builder.yaml",
+        "JGB_REGISTRY_PATH": "/path/to/build-dir/registry",
+        "TYPESAFE_API_KEY": "${TYPESAFE_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+**Codex**: `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.jev-graph]
+command = "/path/to/jev-graph-builder/.venv/bin/jev-graph-builder"
+args = ["mcp"]
+env = { JEV_GRAPH_BUILDER_CONFIG = "/path/to/build-dir/jev-graph-builder.yaml", JGB_REGISTRY_PATH = "/path/to/build-dir/registry" }
+env_vars = ["TYPESAFE_API_KEY"]
+default_tools_approval_mode = "approve"   # otherwise `codex exec` refuses the calls
+tool_timeout_sec = 300
+```
+
+**OpenCode**: `opencode.json` in your project:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "jev-graph": {
+      "type": "local",
+      "command": ["/path/to/jev-graph-builder/.venv/bin/jev-graph-builder", "mcp"],
+      "enabled": true,
+      "environment": {
+        "JEV_GRAPH_BUILDER_CONFIG": "/path/to/build-dir/jev-graph-builder.yaml",
+        "JGB_REGISTRY_PATH": "/path/to/build-dir/registry",
+        "TYPESAFE_API_KEY": "{env:TYPESAFE_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+To share one server between sessions, run `jev-graph-builder mcp --transport streamable-http --port 8765` and point clients at `http://127.0.0.1:8765/mcp`. The HTTP server has no authentication, so keep it on `127.0.0.1` (the default). To run the server with least privilege, set `JGB_READER_DSN` to a database user with the `jev_graph_builder_reader` role. That role can read the graph and can only add records of its own Jev calls and decisions.
 
 ## Tests
 

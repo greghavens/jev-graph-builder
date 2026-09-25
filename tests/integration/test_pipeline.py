@@ -20,6 +20,7 @@ from jev_graph_builder.pipeline.s8_training import export
 from jev_graph_builder.pipeline.stages import all_stages
 from jev_graph_builder.planner import build_plan
 from jev_graph_builder.query.graphrag import ask
+from jev_graph_builder.query.mcp_server import create_server, instructions_for
 from jev_graph_builder.query.search import search
 
 pytestmark = pytest.mark.integration
@@ -79,6 +80,10 @@ async def test_full_pipeline(ctx, env, tmp_path: Path) -> None:
     assert all(r["outcome"] == "accept" and r["question_set"].startswith("citation_check@") for r in rows)
     assert all(s["citation_ids"] and set(s["citation_ids"]) <= set(answer["citations"]) for s in answer["answer"])
 
+    # The graph as a coding-agent session's context: `graph_context` over the MCP protocol returns the cited
+    # passages, each backed by an accepted chunk, and every Jev decision it made is audited.
+    await _check_mcp_context(ctx, "What does Courier depend on?", answer)
+
     # Item 7: every enabled template, document-disjoint splits, full provenance.
     out = tmp_path / "export"
     written = await export(ctx, out, "jsonl")
@@ -95,6 +100,33 @@ async def test_full_pipeline(ctx, env, tmp_path: Path) -> None:
                 doc_splits[chunk_doc[cid]].add(rec["split"])
     leaks = {d: s for d, s in doc_splits.items() if len(s) > 1}
     assert not leaks, leaks
+
+
+async def _check_mcp_context(ctx, query: str, answer: dict) -> None:
+    from mcp import Client
+
+    async def open_ctx():
+        return ctx
+
+    async def close_ctx(_):
+        return None
+
+    async with Client(create_server(instructions_for(ctx.reg), open_ctx, close_ctx)) as client:
+        assert {t.name for t in (await client.list_tools()).tools} == {"graph_context", "search"}
+        res = await client.call_tool("graph_context", {"query": query})
+        assert not res.is_error, res.content
+        got = res.structured_content
+        found = await client.call_tool("search", {"query": query})
+        assert not found.is_error and found.structured_content["results"], found.content
+    assert got["answerable"] and got["passages"], got
+    # The same query's ask answered from these passages: every citation it kept is among them.
+    assert {v["id"] for v in answer["citations"].values()} <= {v["id"] for v in got["passages"].values()}
+    chunk_ids = [v["id"] for v in got["passages"].values() if v["kind"] == "chunk"]
+    live = await ctx.db.fetch("SELECT chunk_id, text FROM chunks WHERE chunk_id = ANY(%s) AND status = 'accepted'", (chunk_ids,))
+    assert {r["chunk_id"]: r["text"] for r in live} == {v["id"]: v["text"] for v in got["passages"].values() if v["kind"] == "chunk"}
+    assert all(v["source_uri"] and v["heading_path"] is not None for v in got["passages"].values() if v["kind"] == "chunk")
+    stored = await ctx.db.fetch("SELECT decision_id FROM decisions WHERE decision_id = ANY(%s)", (got["decision_ids"],))
+    assert got["decision_ids"] and len(stored) == len(set(got["decision_ids"]))
 
 
 async def test_a_new_question_set_version_reuses_answers_to_unchanged_questions(settings, monkeypatch) -> None:

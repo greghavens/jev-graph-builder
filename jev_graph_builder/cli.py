@@ -302,6 +302,29 @@ def serve(port: int = typer.Option(..., "--port"), host: str = typer.Option("127
 
     from jev_graph_builder.query.http_api import create_app
 
+    uvicorn.run(create_app(*_reader_context()), host=host, port=port)
+
+
+@app.command()
+def mcp(transport: str = typer.Option("stdio", "--transport", help="stdio | streamable-http"),
+        port: Optional[int] = typer.Option(None, "--port", help="required for streamable-http"),
+        host: str = typer.Option("127.0.0.1", "--host", help="streamable-http only")) -> None:
+    """MCP server: `graph_context` and `search` tools for Claude Code, Codex or OpenCode sessions.
+    Uses `JGB_READER_DSN` when set (least privilege, §17)."""
+    from jev_graph_builder.query.mcp_server import create_server, instructions_for
+    from jev_graph_builder.registry.loader import Registry
+
+    server = create_server(instructions_for(Registry(_settings().resolved_registry())), *_reader_context())
+    if transport == "stdio":
+        server.run("stdio")
+    elif transport == "streamable-http" and port:
+        server.run("streamable-http", host=host, port=port)
+    else:
+        _fail(f"--transport {transport!r} needs to be stdio, or streamable-http with --port")
+
+
+def _reader_context() -> tuple[Callable[[], Awaitable[Context]], Callable[[Context], Awaitable[None]]]:
+    """Open/close a query-time Context, on `JGB_READER_DSN` when set, without migrating the schema."""
     settings = _settings()
     reader = os.environ.get("JGB_READER_DSN")
     if reader:
@@ -317,7 +340,7 @@ def serve(port: int = typer.Option(..., "--port"), host: str = typer.Option("127
     async def close_ctx(ctx: Context) -> None:
         await runtimes.pop(id(ctx)).close()
 
-    uvicorn.run(create_app(open_ctx, close_ctx), host=host, port=port)
+    return open_ctx, close_ctx
 
 
 # ------------------------------------------------------------------- audit

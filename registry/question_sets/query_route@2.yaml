@@ -1,13 +1,14 @@
 name: query_route
-version: 1
+version: 2
 jev_model: jev-1.13.0
-purpose: "Query time: classify the query intent and its complexity, which together select a retrieval plan from policies.retrieval_plans."
+purpose: "Query time: classify the query intent and its complexity, which together select a retrieval plan from policies.retrieval_plans. v2: the corpus scope is in the state, so out_of_scope is judged against what the corpus covers."
 state_template:
   query: {max_tokens_ref: policies.query.query_state_tokens, untrusted: true}
+  corpus: {fields: [scope]}
 questions:
   intent:
     type: choice
-    instructions: "What kind of question is `query`?"
+    instructions: "What kind of question is `query`? `corpus.scope` describes what the corpus covers."
     criteria: {$from_ontology: query_intents}
   complexity:
     type: score
