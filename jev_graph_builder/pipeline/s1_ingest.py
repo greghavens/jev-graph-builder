@@ -187,11 +187,15 @@ class IngestStage(Stage):
         }
 
         async def write(conn) -> str:
-            # A changed file gets a new doc_id; the old version is superseded, never deleted.
-            await conn.execute(
-                "UPDATE documents SET status = 'superseded' WHERE corpus_id = %s AND source_uri = %s AND doc_id <> %s",
-                (ctx.corpus_id, uri, doc_id),
+            # A changed file gets a new doc_id; the old version and its chunks are superseded, never deleted.
+            old = await repo.fetch(
+                conn, "UPDATE documents SET status = 'superseded' WHERE corpus_id = %s AND source_uri = %s AND doc_id <> %s "
+                "RETURNING doc_id", (ctx.corpus_id, uri, doc_id),
             )
+            if old:
+                chunks = await repo.fetch(conn, "SELECT chunk_id FROM chunks WHERE doc_id = ANY(%s) AND status <> 'superseded'",
+                                          ([r["doc_id"] for r in old],))
+                await repo.supersede_chunks(conn, [r["chunk_id"] for r in chunks])
             await repo.upsert(conn, "documents", doc_row, key=("doc_id",))
             await repo.upsert_many(conn, "units", unit_rows, key=("unit_id",))
             await write_decisions(conn, triage)

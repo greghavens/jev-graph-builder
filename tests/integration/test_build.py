@@ -209,6 +209,45 @@ async def test_build_segments_by_code_without_asking_jev(env: Harnessed, docs: l
     assert by_qs["chunk_check_fanout"] == len(chunks)         # one per chunk
 
 
+async def test_a_changed_file_supersedes_the_old_versions_chunks(env: Harnessed, docs: list[Path], tmp_path: Path,
+                                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    """§14.3: a changed file is a new document; the old version, its chunks and what was drawn from them
+    (edges, mentions, claims) are superseded, so no later stage selects them."""
+    monkeypatch.setenv(CONFIG_FILE_ENV, str(tmp_path / "jev-graph-builder.yaml"))
+    write_config(env.settings.model_dump(mode="json"))
+    src = [str(docs[0].parent)]
+    like = f"%{docs[0].name}"
+
+    first = await Builder(src, None, lambda _k, _s: True, "tester", open_ctx=_opener(env)).run()
+    assert first.ok, first.stopped
+    with psycopg.connect(env.settings.dsn) as conn:
+        (old,) = conn.execute("SELECT doc_id FROM documents WHERE source_uri LIKE %s", (like,)).fetchone()
+        drawn = conn.execute("SELECT (SELECT count(*) FROM mentions m JOIN chunks c USING (chunk_id) WHERE c.doc_id = %s), "
+                             "(SELECT count(*) FROM claims x JOIN chunks c USING (chunk_id) WHERE c.doc_id = %s)",
+                             (old, old)).fetchone()
+    assert all(drawn), drawn  # the old version has mentions and claims to supersede
+
+    docs[0].write_text(docs[0].read_text(encoding="utf-8") + "\n\nAn added closing paragraph.\n", encoding="utf-8")
+    second = await Builder(src, None, lambda _k, _s: True, "tester", open_ctx=_opener(env), stop_after="segment").run()
+    assert second.stopped == {"reason": STOPPED_AS_ASKED, "stage": "segment"}, second.stopped
+
+    def live(conn: psycopg.Connection, sql: str) -> int:
+        return conn.execute(sql + " AND x.status <> 'superseded'", (old,)).fetchone()[0]
+
+    with psycopg.connect(env.settings.dsn) as conn:
+        assert conn.execute("SELECT status FROM documents WHERE doc_id = %s", (old,)).fetchone()[0] == "superseded"
+        assert live(conn, "SELECT count(*) FROM chunks x WHERE x.doc_id = %s") == 0
+        assert live(conn, "SELECT count(*) FROM edges x JOIN chunks c ON c.chunk_id IN (x.src_id, x.dst_id) WHERE c.doc_id = %s") == 0
+        assert live(conn, "SELECT count(*) FROM mentions x JOIN chunks c USING (chunk_id) WHERE c.doc_id = %s") == 0
+        assert live(conn, "SELECT count(*) FROM claims x JOIN chunks c USING (chunk_id) WHERE c.doc_id = %s") == 0
+        assert live(conn, "SELECT count(*) FROM entities x WHERE NOT EXISTS (SELECT 1 FROM mentions m WHERE "
+                          "m.entity_id = x.entity_id AND m.status <> 'superseded') AND EXISTS (SELECT 1 FROM mentions m "
+                          "JOIN chunks c USING (chunk_id) WHERE m.entity_id = x.entity_id AND c.doc_id = %s)") == 0
+        new_chunks = conn.execute("SELECT count(*) FROM chunks c JOIN documents d USING (doc_id) WHERE d.source_uri LIKE %s "
+                                  "AND d.doc_id <> %s AND c.status = 'accepted'", (like, old)).fetchone()[0]
+    assert new_chunks > 0
+
+
 class Killed(Exception):
     pass
 

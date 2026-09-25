@@ -65,3 +65,17 @@ async def supersede(conn: AsyncConnection, table: str, id_col: str, ids: Sequenc
     """Superseded rows are marked, never deleted (§14.3)."""
     if ids:
         await conn.execute(f"UPDATE {table} SET status = 'superseded' WHERE {id_col} = ANY(%s)", (list(ids),))
+
+
+async def supersede_chunks(conn: AsyncConnection, ids: Sequence[str]) -> None:
+    """Chunks superseded together with what was drawn from them: every edge that touches them, their mentions
+    and claims, and each entity left with no mention outside superseded ones."""
+    if ids:
+        ids = list(ids)
+        await supersede(conn, "chunks", "chunk_id", ids)
+        await conn.execute("UPDATE edges SET status = 'superseded' WHERE src_id = ANY(%s) OR dst_id = ANY(%s)", (ids, ids))
+        await conn.execute("UPDATE claims SET status = 'superseded' WHERE chunk_id = ANY(%s)", (ids,))
+        await conn.execute("UPDATE mentions SET status = 'superseded' WHERE chunk_id = ANY(%s)", (ids,))
+        await conn.execute(
+            "UPDATE entities e SET status = 'superseded' WHERE e.entity_id IN (SELECT entity_id FROM mentions WHERE chunk_id = ANY(%s)) "
+            "AND NOT EXISTS (SELECT 1 FROM mentions m WHERE m.entity_id = e.entity_id AND m.status <> 'superseded')", (ids,))

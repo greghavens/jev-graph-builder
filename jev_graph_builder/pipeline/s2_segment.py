@@ -236,10 +236,7 @@ class SegmentStage(Stage):
         async def write(conn) -> str:
             ids = [c["chunk_id"] for c in chunk_rows]
             stale = await repo.fetch(conn, "SELECT chunk_id FROM chunks WHERE doc_id = %s AND NOT (chunk_id = ANY(%s)) AND status <> 'superseded'", (doc_id, ids))
-            stale_ids = [r["chunk_id"] for r in stale]
-            await repo.supersede(conn, "chunks", "chunk_id", stale_ids)
-            if stale_ids:
-                await conn.execute("UPDATE edges SET status = 'superseded' WHERE src_id = ANY(%s) OR dst_id = ANY(%s)", (stale_ids, stale_ids))
+            await repo.supersede_chunks(conn, [r["chunk_id"] for r in stale])
             # Chunk text is immutable per chunk_id; keep S3/S4 outputs if the row exists.
             await repo.upsert_many(conn, "chunks", chunk_rows, key=("chunk_id",),
                                    update=("ord", "context_prefix", "role", "topic", "boilerplate", "meta", "status",
