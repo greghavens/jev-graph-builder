@@ -130,10 +130,11 @@ store:
   hnsw: {m: 16, ef_construction: 200}
   # kNN queries take `k × ann_overfetch` rows, then re-sort by (distance, id) and keep k.
   ann_overfetch: 4
-  # Pipeline candidate generation (S5, S6). `exact` is reproducible across runs and
-  # resumes (acceptance 2); `hnsw` is faster on very large corpora but can pick different
+  # Pipeline candidate generation (S5, S6). `exact` and `torch` are reproducible across runs
+  # and resumes (acceptance 2); `torch` computes the all-pairs joins on the run's `device`
+  # (GPU when present) instead of one Postgres backend. `hnsw` is fast but can pick different
   # neighbours when vectors tie. See jev_graph_builder/store/knn.py.
-  candidate_knn: {mode: exact, ef_search: 100}
+  candidate_knn: {mode: torch, ef_search: 100}
 
 # ---------------------------------------------------------------- harness
 harness:

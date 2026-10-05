@@ -21,7 +21,7 @@ from jev_graph_builder.config import CONFIG_FILE_ENV, Settings, write_config
 from jev_graph_builder.pipeline.common import Context
 from jev_graph_builder.registry.loader import Registry
 from tests.integration.conftest import Harnessed
-from tests.integration.fakes import FakeEmbedder
+from tests.integration.fakes import YES, FakeEmbedder
 
 pytestmark = pytest.mark.integration
 
@@ -129,6 +129,23 @@ async def test_build_links_follow_jev_yes_and_no(env: Harnessed, docs: list[Path
     assert outcomes <= {"accept", "reject"}
     assert (accepted > 0) == edges
     assert env.fake_jev.calls and all(r.prompt_ref.split("@")[0] in GENERATION_PROMPTS for r in env.harness.runs)
+
+
+async def test_build_reruns_links_for_orphans_audit_sends_back(env: Harnessed, docs: list[Path], tmp_path: Path,
+                                                               monkeypatch: pytest.MonkeyPatch) -> None:
+    """Audit runs after links; when Jev says an orphan chunk should connect, its links item goes back to
+    pending, and the same build re-runs links so it ends with nothing pending."""
+    monkeypatch.setenv(CONFIG_FILE_ENV, str(tmp_path / "jev-graph-builder.yaml"))
+    write_config(env.settings.model_dump(mode="json"))
+    env.fake_jev.overrides.update({("audit_orphan", "should_connect"): YES,
+                                   ("link_fanout", "related"): 0.3, ("link", "related"): 0.3})
+
+    report = await Builder([str(docs[0].parent)], None, lambda _k, _s: True, "tester", open_ctx=_opener(env)).run()
+
+    ran = [r["stage"] for r in report.phases["graph"]["stages"]]
+    assert ran.count("links") == 2 and ran.count("audit") == 2, ran
+    assert report.phases["verify"]["checks"]["pending_items"] == 0, report.phases["verify"]["checks"]
+    assert report.ok, report.stopped
 
 
 @pytest.mark.parametrize(("p_applies", "derived"), [(0.97, ["1.0", "2.0"]), (0.3, None)])

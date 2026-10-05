@@ -239,6 +239,9 @@ class Registry:
     def question_set_names(self) -> list[str]:
         return sorted({n for n, _ in self._question_set_files})
 
+    def question_set_versions(self) -> list[tuple[str, int]]:
+        return sorted(self._question_set_files)
+
     def active_qs_version(self, name: str) -> int:
         active = self.policy("question_sets.active")
         if name not in active:

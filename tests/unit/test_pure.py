@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from jev_graph_builder.jev.gating import ACCEPT, REJECT
@@ -418,6 +419,31 @@ def test_route_sample_is_clipped_spread_and_within_token_limit() -> None:
     assert len(one) == 1 and len(one[0]) == est.chars(50)
 
 
+@pytest.mark.asyncio
+async def test_codex_override_routes_among_codex_profiles_only() -> None:
+    from jev_graph_builder.app import make_router
+    from jev_graph_builder.registry.loader import Registry
+
+    reg = Registry(Path(__file__).parents[2] / "registry")
+    seen = []
+
+    class Jev:
+        provider = SimpleNamespace(estimator=TokenEstimator(4))
+
+        async def ask(self, _qs, _inputs, _subject, _key, dynamic):
+            seen.append(dynamic["profiles"])
+            choice = next(iter(dynamic["profiles"]))
+            decision = SimpleNamespace(outcome=ACCEPT, answers={"profile": {"choice": choice}})
+            return SimpleNamespace(single=decision)
+
+    route = make_router(reg, Jev(), None, "codex")
+    assert await route("extract", {"records": ["example"]}) in seen[-1]
+    assert set(seen[-1]) == {"codex_luna", "codex_batch", "codex_batch_strong"}
+    assert all(reg.profile("harness", name)["harness"] == "codex" for name in seen[-1])
+    assert await route("answer", {"records": ["example"]}) in seen[-1]
+    assert set(seen[-1]) == {"codex_readonly", "codex_readonly_strong"}
+
+
 def test_pending_in_keeps_whole_batches_and_runs_only_selected() -> None:
     from jev_graph_builder.ledger.ledger import WorkItem
     from jev_graph_builder.pipeline.common import pending_in
@@ -477,3 +503,30 @@ def test_a_chunk_the_check_cannot_see_whole_fails_its_document_before_jev_is_ask
     drafts = [{"chunk_id": "c1", "text": "y" * (window + 1), "units": [{"kind": "paragraph", "heading_path": []}]}]
     with pytest.raises(ValueError, match="chunk check window"):
         asyncio.run(SegmentStage()._check_chunks(ctx, "d1", drafts, []))
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_torch_knn_matches_float64_brute_force_through_ties_and_groups(device: str) -> None:
+    import torch
+
+    from jev_graph_builder.store.knn import _neighbours
+
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("no CUDA device")
+    rng = np.random.default_rng(3)
+    base = rng.normal(size=(40, 16))
+    # 30 copies of one vector put the fetch cut inside a tie; one zero vector is never a neighbour.
+    vecs = np.vstack([base, np.repeat(base[:1], 30, axis=0), rng.normal(size=(200, 16)), np.zeros((1, 16))])
+    grp = rng.integers(0, 25, len(vecs))
+    for groups in (None, grp):
+        got = _neighbours(vecs, groups, 5, 20, device)
+        x = vecs / np.maximum(np.linalg.norm(vecs, axis=1, keepdims=True), 1e-300)
+        for i in range(len(vecs) - 1):
+            ok = np.linalg.norm(vecs, axis=1) > 0
+            ok[i] = False
+            if groups is not None:
+                ok &= groups != groups[i]
+            idx = np.flatnonzero(ok)
+            d = 1.0 - x[idx] @ x[i]
+            assert got[i] == idx[np.lexsort((idx, d))][:5].tolist()
+        assert got[-1] == []

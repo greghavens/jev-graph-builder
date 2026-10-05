@@ -73,17 +73,24 @@ class LinkStage(Stage):
                 pairs[(min(a, b), max(a, b))].add(source)
 
         knn_policy = ctx.reg.policy("store.candidate_knn")
-        order = knn.order_by(knn_policy, "ORDER BY c2.embedding <=> c.embedding")
-        rows = await knn.fetch(ctx.db, knn_policy,
-            "SELECT c.chunk_id AS a, n.chunk_id AS b FROM chunks c CROSS JOIN LATERAL ("
-            " SELECT s.chunk_id FROM (SELECT c2.chunk_id, c2.embedding <=> c.embedding AS dist FROM chunks c2"
-            "  WHERE c2.corpus_id = c.corpus_id AND c2.chunk_id <> c.chunk_id"
-            "  AND c2.status = 'accepted' AND c2.embedding IS NOT NULL AND NOT coalesce(c2.boilerplate, false)"
-            f"  AND (NOT %(x)s OR c2.doc_id <> c.doc_id) {order} LIMIT %(fetch)s) s"
-            " ORDER BY s.dist, s.chunk_id LIMIT %(k)s) n "
-            "WHERE c.corpus_id = %(c)s AND c.status = 'accepted' AND c.embedding IS NOT NULL AND NOT coalesce(c.boilerplate, false)",
-            {"k": caps["ann_k"], "fetch": caps["ann_k"] * ctx.reg.policy("store.ann_overfetch"),
-             "x": caps["ann_exclude_same_doc"], "c": ctx.corpus_id})
+        params = {"k": caps["ann_k"], "fetch": caps["ann_k"] * ctx.reg.policy("store.ann_overfetch"),
+                  "x": caps["ann_exclude_same_doc"], "c": ctx.corpus_id}
+        if knn_policy["mode"] == knn.TORCH:
+            rows = await knn.self_join(ctx.db,
+                "SELECT chunk_id AS id, embedding, CASE WHEN %(x)s THEN doc_id END AS grp FROM chunks "
+                "WHERE corpus_id = %(c)s AND status = 'accepted' AND embedding IS NOT NULL AND NOT coalesce(boilerplate, false)",
+                params, params["k"], params["fetch"], ctx.settings.device)
+        else:
+            order = knn.order_by(knn_policy, "ORDER BY c2.embedding <=> c.embedding")
+            rows = await knn.fetch(ctx.db, knn_policy,
+                "SELECT c.chunk_id AS a, n.chunk_id AS b FROM chunks c CROSS JOIN LATERAL ("
+                " SELECT s.chunk_id FROM (SELECT c2.chunk_id, c2.embedding <=> c.embedding AS dist FROM chunks c2"
+                "  WHERE c2.corpus_id = c.corpus_id AND c2.chunk_id <> c.chunk_id"
+                "  AND c2.status = 'accepted' AND c2.embedding IS NOT NULL AND NOT coalesce(c2.boilerplate, false)"
+                f"  AND (NOT %(x)s OR c2.doc_id <> c.doc_id) {order} LIMIT %(fetch)s) s"
+                " ORDER BY s.dist, s.chunk_id LIMIT %(k)s) n "
+                "WHERE c.corpus_id = %(c)s AND c.status = 'accepted' AND c.embedding IS NOT NULL AND NOT coalesce(c.boilerplate, false)",
+                params)
         for r in rows:
             add(r["a"], r["b"], SRC_ANN)
 

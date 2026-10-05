@@ -26,7 +26,7 @@ from jev_graph_builder.ledger.ledger import DONE, WorkItem
 from jev_graph_builder.pipeline.citations import check_sentences
 from jev_graph_builder.pipeline.communities import partition as leiden_partition
 from jev_graph_builder.pipeline.common import (
-    Context, Deps, RunOptions, RunReport, Stage, Writer, run_single_item, write_decisions,
+    REOPENED_STAGES, Context, Deps, RunOptions, RunReport, Stage, Writer, run_single_item, write_decisions,
 )
 from jev_graph_builder.pipeline.s6_links import ANCHOR_PREFIX, relation_definitions
 from jev_graph_builder.store import repo
@@ -152,6 +152,7 @@ class AuditStage(Stage):
             if d.outcome == ACCEPT:  # should connect: re-run its link candidates
                 await conn.execute("UPDATE work_items SET status = 'pending' WHERE stage = %s AND item_id = %s",
                                    (LINK_STAGE, f"{ANCHOR_PREFIX}{chunk_id}"))
+                ctx.cache.setdefault(REOPENED_STAGES, set()).add(LINK_STAGE)
             return DONE
 
         return write
@@ -168,10 +169,14 @@ class AuditStage(Stage):
         out: dict[str, Any] = {}
 
         async def factory() -> Writer:
+            # Only calls whose question set version is still in the Registry can be re-asked.
+            known = ctx.reg.question_set_versions()
             rows = await ctx.db.fetch(
                 "SELECT call_id, question_set, qs_version, state, state_hash, questions, keys, dynamic, answers, jev_model FROM jev_calls "
                 "WHERE NOT drift AND provider = %s AND state IS NOT NULL AND questions IS NOT NULL "
-                "ORDER BY md5(call_id || %s) LIMIT %s", (ctx.jev.provider.name, ctx.run_id or "", pol["sample_size"]))
+                "AND (question_set, qs_version) IN (SELECT * FROM unnest(%s::text[], %s::int[])) "
+                "ORDER BY md5(call_id || %s) LIMIT %s",
+                (ctx.jev.provider.name, [n for n, _ in known], [v for _, v in known], ctx.run_id or "", pol["sample_size"]))
             stats = DriftStats()
             for row in rows:
                 raw = await ctx.jev.replay(row)
@@ -193,7 +198,7 @@ class AuditStage(Stage):
 
             return write
 
-        await run_single_item(ctx, self, item, factory)
+        await run_single_item(ctx, self, item, factory, keep_going=True)
         return out or None
 
     async def communities(self, ctx: Context) -> list[str]:
@@ -244,7 +249,7 @@ class AuditStage(Stage):
 
                 return write
 
-            await run_single_item(ctx, self, item, factory)
+            await run_single_item(ctx, self, item, factory, keep_going=True)
         async with ctx.db.tx() as conn:
             await conn.execute("UPDATE communities SET status = 'superseded' WHERE corpus_id = %s AND NOT (community_id = ANY(%s)) "
                                "AND status <> 'superseded'", (ctx.corpus_id, ids))

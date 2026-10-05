@@ -55,7 +55,7 @@ def route_sample(records: list[Any], est: TokenEstimator, max_chars: int, max_to
         k -= 1
 
 
-def make_router(reg: Registry, jev: JevService, db: Database | None):
+def make_router(reg: Registry, jev: JevService, db: Database | None, harness: str | None = None):
     """R-100: `QS.harness_route` picks the harness profile for a job (a Choice over routable profiles)."""
 
     async def route(job_name: str, state: dict[str, Any]) -> str | None:
@@ -68,7 +68,8 @@ def make_router(reg: Registry, jev: JevService, db: Database | None):
         # Jev chooses among the profiles at the job's autonomy level only: a batch job needs a workspace-writing one.
         autonomy = reg.profile("harness", default_name)["autonomy"]
         profiles = {k: v["description"] for k, v in reg.profiles["harness"].items()
-                    if v["autonomy"] == autonomy and v.get("routable", True) and k not in exclude}
+                    if v["autonomy"] == autonomy and v.get("routable", True) and k not in exclude
+                    and (harness in (None, "auto") or v["harness"] == harness)}
         inputs = {"job": job, "records": records}
         result = await jev.ask(QS_HARNESS_ROUTE, inputs, ROUTE_SUBJECT, sha256_hex(job_name, inputs, profiles),
                                dynamic={"profiles": profiles})
@@ -119,14 +120,15 @@ class Runtime:
         provider = build_jev_provider(reg, s, self.jev_transport)
         jev = JevService(reg, provider, db)
         adapters = self.adapters or {"claude_code": ClaudeCodeAdapter(reg), "codex": CodexAdapter(reg)}
-        jobs = JobRunner(reg, adapters, db, s.workspace_root, router=make_router(reg, jev, db), harness_override=self.harness)
+        jobs = JobRunner(reg, adapters, db, s.workspace_root,
+                         router=make_router(reg, jev, db, self.harness), harness_override=self.harness)
         emb_profile = reg.profile("embedding", s.profiles.embedding)
         ledger_pol = reg.policy("run.ledger")
         self.ctx = Context(
             settings=s, reg=reg, db=db,
             ledger=Ledger(db, ledger_pol["lease_seconds"], ledger_pol["max_attempts"], ledger_pol["heartbeat_seconds"]),
             jev=jev, jobs=jobs,
-            embedder_factory=self.embedder_factory or (lambda: build_embedder(emb_profile)),
+            embedder_factory=self.embedder_factory or (lambda: build_embedder(emb_profile, s.device)),
             corpus_id=s.corpus,
         )
         return self.ctx

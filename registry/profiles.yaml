@@ -87,7 +87,7 @@ harness:
   codex_luna:
     harness: codex
     autonomy: workspace_write
-    description: "GPT-6 Luna: fast and affordable model for easier tasks."
+    description: "GPT-6 Luna (medium reasoning): most efficient Codex model for focused, high-volume extraction, summarization and repeatable records with clear evidence. Choose for straightforward batches where speed and low usage matter; complex cross-record inference needs a stronger model. Writes output files in a workspace sandbox; up to 25 records per batch."
     model: gpt-6-luna
     reasoning_effort: medium
     sandbox: workspace-write
@@ -99,7 +99,7 @@ harness:
   codex_batch:
     harness: codex
     autonomy: workspace_write
-    description: "GPT-6 Sol: workhorse model for coding and everyday work."
+    description: "GPT-6 Sol (medium reasoning): balanced Codex model for everyday coding, writing and extraction that needs judgment, completeness and factual reliability. Choose for nuanced records or multi-step batch work when Luna may miss context but Astra's extra capability is unnecessary. Writes output files in a workspace sandbox; up to 25 records per batch."
     model: gpt-6-sol
     reasoning_effort: medium
     sandbox: workspace-write
@@ -111,7 +111,7 @@ harness:
   codex_batch_strong:
     harness: codex
     autonomy: workspace_write
-    description: "GPT-6 Astra: frontier intelligence for the most demanding work."
+    description: "GPT-6 Astra (medium reasoning): most capable Codex model for ambiguous, complex tasks, deep analysis and demanding synthesis across records. Choose when accuracy on difficult relations or multi-hop reasoning justifies more time and usage than Sol or Luna. Writes output files in a workspace sandbox; up to 10 records per batch."
     model: gpt-6-astra
     reasoning_effort: medium
     sandbox: workspace-write
@@ -123,8 +123,8 @@ harness:
   codex_readonly:
     harness: codex
     autonomy: read_only
-    description: "Codex, read-only sandbox, one structured answer from the prompt alone."
-    model: gpt-6-astra
+    description: "GPT-6 Sol (medium reasoning): balanced Codex model for one structured answer from supplied context, such as a community summary or grounded answer. Handles everyday synthesis and judgment with moderate time and usage. Read-only sandbox; no output file editing is expected."
+    model: gpt-6-sol
     reasoning_effort: medium
     sandbox: read-only
     context_tokens: 150000
@@ -134,7 +134,7 @@ harness:
   codex_readonly_strong:
     harness: codex
     autonomy: read_only
-    description: "Codex with high reasoning effort, read-only, for hard synthesis."
+    description: "GPT-6 Astra (high reasoning): strongest Codex profile for one difficult structured answer, such as ontology drafting, relation disambiguation or multi-hop synthesis from supplied context. Uses more time and capacity for deeper analysis. Read-only sandbox; no output file editing is expected."
     model: gpt-6-astra
     reasoning_effort: high
     sandbox: read-only
@@ -151,7 +151,6 @@ embedding:
     max_tokens: 256
     batch_size: 64
     normalize: true
-    device: cpu
   openai_compatible:
     kind: openai_compatible
     endpoint: https://api.openai.com/v1/embeddings

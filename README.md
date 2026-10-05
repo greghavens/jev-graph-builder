@@ -52,6 +52,18 @@ jev-graph-builder build './site/**/*.html'
 
 The option goes before the command: `jev-graph-builder --harness codex build ./docs`.
 
+## GPU
+
+Embedding and the nearest-neighbour searches that find candidate entity merges and chunk links run on the GPU when PyTorch can see one. `--device` picks for the whole run:
+
+| `--device` | Uses |
+|---|---|
+| `auto` (default) | The GPU if there is one, otherwise the CPU |
+| `cpu` | The CPU only |
+| `cuda`, `cuda:1`, ... | That GPU |
+
+Like `--harness`, it goes before the command: `jev-graph-builder --device cpu build ./docs`.
+
 ## Options
 
 ```bash
@@ -69,6 +81,7 @@ The same settings can go in a `jev-graph-builder.yaml` file in the working direc
 ```yaml
 dsn: postgresql://user@localhost:5432/graph
 harness: claude_code
+device: auto
 ```
 
 Keep the TypeSafe key in the environment, not in this file.

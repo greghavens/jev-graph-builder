@@ -490,7 +490,7 @@ class TrainingStage(Stage):
 
                 return write
 
-            await run_single_item(ctx, self, item, factory)
+            await run_single_item(ctx, self, item, factory, keep_going=True)
 
     async def assign_splits(self, ctx: Context) -> None:
         pol = ctx.reg.policy("training.splits")

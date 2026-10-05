@@ -2,6 +2,7 @@
 
 Every command prints JSON on stdout so it can be scripted; logs go to stderr.
 `--harness claude_code|codex|auto` overrides the harness per command.
+`--device auto|cpu|cuda[:N]` picks where embedding and candidate kNN run.
 """
 
 from __future__ import annotations
@@ -28,9 +29,10 @@ app.add_typer(registry_app, name="registry")
 app.add_typer(qs_app, name="qs")
 app.add_typer(audit_app, name="audit")
 
-_state: dict[str, Any] = {"harness": None}
+_state: dict[str, Any] = {"harness": None, "device": None}
 
 HarnessOpt = typer.Option(None, "--harness", help="claude_code | codex | auto")
+DeviceOpt = typer.Option(None, "--device", help="auto | cpu | cuda[:N] (embedding and candidate kNN)")
 
 
 def _echo(value: Any) -> None:
@@ -38,7 +40,7 @@ def _echo(value: Any) -> None:
 
 
 def _settings() -> Settings:
-    return Settings()
+    return Settings(**({"device": _state["device"]} if _state["device"] else {}))
 
 
 def _run(fn: Callable[[Context], Awaitable[Any]], harness: str | None = None, migrate_db: bool = True) -> Any:
@@ -55,8 +57,9 @@ def _fail(message: str) -> None:
 
 
 @app.callback()
-def main(harness: Optional[str] = HarnessOpt) -> None:
+def main(harness: Optional[str] = HarnessOpt, device: Optional[str] = DeviceOpt) -> None:
     _state["harness"] = harness
+    _state["device"] = device
 
 
 # ------------------------------------------------------------------ setup

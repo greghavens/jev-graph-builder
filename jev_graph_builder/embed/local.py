@@ -7,13 +7,13 @@ from typing import Any
 
 
 class SentenceTransformersEmbedder:
-    def __init__(self, profile: dict[str, Any]) -> None:
+    def __init__(self, profile: dict[str, Any], device: str = "auto") -> None:
         from sentence_transformers import SentenceTransformer
 
         self.model_id = profile["model_id"]
         self.batch_size = profile["batch_size"]
         self.normalize = profile["normalize"]
-        self._model = SentenceTransformer(self.model_id, device=profile.get("device"))
+        self._model = SentenceTransformer(self.model_id, device=None if device == "auto" else device)
         self.dim = int(self._model.get_sentence_embedding_dimension())
         if self.dim != profile["dim"]:
             raise ValueError(f"profile says dim {profile['dim']} but {self.model_id} produces {self.dim}")

@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     registry_path: Path = Path("registry")
     workspace_root: Path = Path(".jgb/workspaces")
     harness: HarnessChoice = "auto"
+    # Where local compute runs (embedding, candidate kNN): `auto` takes the GPU when torch sees one.
+    device: str = Field("auto", pattern=r"^(auto|cpu|cuda(:\d+)?)$")
     # Set when `dsn` points at the container `build` manages (profiles.postgres.<name>).
     local_postgres: str | None = None
     profiles: ActiveProfiles = Field(default_factory=ActiveProfiles)
@@ -70,8 +72,16 @@ class Settings(BaseSettings):
         return self.registry_path.resolve()
 
 
+SECRET_FILE = Path.home() / ".config" / "jev-graph-builder" / "env"
+
+
 def secret(env_var: str) -> str | None:
-    """Secrets come only from the environment; empty values count as missing."""
+    """`NAME=value` in SECRET_FILE, else the environment; empty values count as missing."""
+    if SECRET_FILE.is_file():
+        for line in SECRET_FILE.read_text(encoding="utf-8").splitlines():
+            name, _, value = line.partition("=")
+            if name.strip() == env_var and value.strip():
+                return value.strip()
     value = os.environ.get(env_var, "").strip()
     return value or None
 

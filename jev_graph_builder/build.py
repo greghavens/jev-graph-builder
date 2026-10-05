@@ -22,7 +22,7 @@ from typing import Any
 from jev_graph_builder.app import runtime
 from jev_graph_builder.config import Settings, write_config
 from jev_graph_builder.harness.base import HarnessUsageLimit
-from jev_graph_builder.pipeline.common import RUN_STOPS, Context, RunOptions, ensure_corpus, run_stage
+from jev_graph_builder.pipeline.common import REOPENED_STAGES, RUN_STOPS, Context, RunOptions, ensure_corpus, run_stage
 from jev_graph_builder.registry import gate
 from jev_graph_builder.registry.gate import BOOTSTRAP_KIND
 from jev_graph_builder.registry.lint import lint_registry
@@ -31,6 +31,7 @@ from jev_graph_builder.registry.versioning import Proposal, get_proposal
 
 STOPPED_AS_ASKED = "stop_after"
 BOOTSTRAP_STAGE = "bootstrap"
+MAX_REOPEN_ROUNDS = 2
 
 # (gate name, what the human is asked to approve) -> approved?
 Approver = Callable[[str, dict[str, Any]], bool]
@@ -133,16 +134,25 @@ class Builder:
         from jev_graph_builder.pipeline.stages import graph_stages
 
         reports, evolved = [], []
-        for st in graph_stages():
-            rep = await run_stage(ctx, st, RunOptions(), {"paths": self.docs})
-            reports.append(rep.as_dict())
-            evolved.extend(rep.proposals)
-            self.progress(st.name, rep.as_dict())
-            if rep.paused:
-                self.report.stopped = {"reason": "paused", "stage": st.name, "errors": rep.errors}
+        stages = graph_stages()
+        for _ in range(1 + MAX_REOPEN_ROUNDS):
+            for st in stages:
+                rep = await run_stage(ctx, st, RunOptions(), {"paths": self.docs})
+                reports.append(rep.as_dict())
+                evolved.extend(rep.proposals)
+                self.progress(st.name, rep.as_dict())
+                if rep.paused:
+                    self.report.stopped = {"reason": "paused", "stage": st.name, "errors": rep.errors}
+                    break
+                if self._maybe_stop(st.name):
+                    break
+            reopened = ctx.cache.pop(REOPENED_STAGES, set())
+            if self.report.stopped or not reopened:
                 break
-            if self._maybe_stop(st.name):
-                break
+            # A later stage sent items back to an earlier one (audit: an orphan chunk should connect,
+            # so its links re-run): run again from there so the build ends with nothing pending.
+            names = [st.name for st in graph_stages()]
+            stages = graph_stages()[min(names.index(n) for n in reopened):]
         return {"registry_version": ctx.registry_version, "stages": reports, "evolved": evolved,
                 "max_rounds": ctx.reg.policy("ontology.max_evolution_rounds")}
 

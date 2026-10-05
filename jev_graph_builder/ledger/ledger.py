@@ -90,6 +90,10 @@ class Ledger:
         rows = await self.db.fetch("SELECT item_id, input_hash, status, attempts FROM work_items WHERE stage = %s", (stage,))
         return {r["item_id"]: r for r in rows}
 
+    async def get(self, stage: str, item_id: str) -> dict | None:
+        return await self.db.fetchone(
+            "SELECT item_id, input_hash, status, attempts FROM work_items WHERE stage = %s AND item_id = %s", (stage, item_id))
+
     @staticmethod
     def classify(item: WorkItem, row: dict | None) -> str:
         """missing | stale | failed | review | pending | done — used by the planner and the runner."""

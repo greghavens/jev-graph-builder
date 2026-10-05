@@ -108,14 +108,20 @@ class EntityStage(Stage):
             add(a, b, "name_key")
 
         knn_policy = reg.policy("store.candidate_knn")
-        order = knn.order_by(knn_policy, "ORDER BY e2.embedding <=> e.embedding")
-        rows = await knn.fetch(ctx.db, knn_policy,
-            "SELECT e.entity_id AS a, n.entity_id AS b FROM entities e CROSS JOIN LATERAL ("
-            " SELECT s.entity_id FROM (SELECT e2.entity_id, e2.embedding <=> e.embedding AS dist FROM entities e2"
-            "  WHERE e2.corpus_id = e.corpus_id AND e2.entity_id <> e.entity_id AND e2.status = 'accepted' AND e2.embedding IS NOT NULL"
-            f"  {order} LIMIT %(fetch)s) s ORDER BY s.dist, s.entity_id LIMIT %(k)s) n "
-            "WHERE e.corpus_id = %(c)s AND e.status = 'accepted' AND e.embedding IS NOT NULL",
-            {"k": caps["ann_k"], "fetch": caps["ann_k"] * reg.policy("store.ann_overfetch"), "c": ctx.corpus_id})
+        params = {"k": caps["ann_k"], "fetch": caps["ann_k"] * reg.policy("store.ann_overfetch"), "c": ctx.corpus_id}
+        if knn_policy["mode"] == knn.TORCH:
+            rows = await knn.self_join(ctx.db,
+                "SELECT entity_id AS id, embedding FROM entities "
+                "WHERE corpus_id = %(c)s AND status = 'accepted' AND embedding IS NOT NULL",
+                params, params["k"], params["fetch"], ctx.settings.device)
+        else:
+            order = knn.order_by(knn_policy, "ORDER BY e2.embedding <=> e.embedding")
+            rows = await knn.fetch(ctx.db, knn_policy,
+                "SELECT e.entity_id AS a, n.entity_id AS b FROM entities e CROSS JOIN LATERAL ("
+                " SELECT s.entity_id FROM (SELECT e2.entity_id, e2.embedding <=> e.embedding AS dist FROM entities e2"
+                "  WHERE e2.corpus_id = e.corpus_id AND e2.entity_id <> e.entity_id AND e2.status = 'accepted' AND e2.embedding IS NOT NULL"
+                f"  {order} LIMIT %(fetch)s) s ORDER BY s.dist, s.entity_id LIMIT %(k)s) n "
+                "WHERE e.corpus_id = %(c)s AND e.status = 'accepted' AND e.embedding IS NOT NULL", params)
         for r in rows:
             add(r["a"], r["b"], "ann")
 
@@ -203,12 +209,16 @@ class EntityStage(Stage):
 
         async def merges_writer():
             async def write(conn) -> str:
+                decs_of_entity: dict[str, list[str]] = {}
+                for k, v in dec_of.items():
+                    for e in set(k.split(PAIR_SEP)):
+                        decs_of_entity.setdefault(e, []).append(v)
                 rows = []
                 for root, members in clusters.items():
                     for m in members:
                         if m == root:
                             continue
-                        ids = sorted(v for k, v in dec_of.items() if m in k.split(PAIR_SEP))
+                        ids = sorted(decs_of_entity.get(m, ()))
                         rows.append({"merge_id": sha256_hex(m, root, ids), "corpus_id": ctx.corpus_id, "entity_id": m,
                                      "merged_into": root, "decision_ids": ids, "status": "accepted",
                                      "registry_version": ctx.registry_version, "created_run_id": ctx.run_id})
@@ -217,8 +227,9 @@ class EntityStage(Stage):
                                    "AND NOT (merge_id = ANY(%s))", (ctx.corpus_id, keep))
                 await repo.upsert_many(conn, "entity_merges", rows, key=("merge_id",))
                 await conn.execute("UPDATE entities SET merged_into = NULL WHERE corpus_id = %s AND merged_into IS NOT NULL", (ctx.corpus_id,))
-                for r in rows:
-                    await conn.execute("UPDATE entities SET merged_into = %s WHERE entity_id = %s", (r["merged_into"], r["entity_id"]))
+                await conn.execute("UPDATE entities e SET merged_into = m.root FROM unnest(%s::text[], %s::text[]) AS m(id, root) "
+                                   "WHERE e.entity_id = m.id",
+                                   ([r["entity_id"] for r in rows], [r["merged_into"] for r in rows]))
                 # Merges Jev contradicted (§8.6 step 4) stay unmerged; they are listed in the item payload.
                 return DONE
             return write
@@ -257,4 +268,4 @@ class EntityStage(Stage):
                 return DONE
             return write
 
-        await run_single_item(ctx, self, item, factory)
+        await run_single_item(ctx, self, item, factory, keep_going=True)

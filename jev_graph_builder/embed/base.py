@@ -15,12 +15,12 @@ class EmbeddingProvider(Protocol):
     async def embed(self, texts: list[str]) -> list[list[float]]: ...
 
 
-def build_embedder(profile: dict[str, Any]) -> EmbeddingProvider:
+def build_embedder(profile: dict[str, Any], device: str = "auto") -> EmbeddingProvider:
     kind = profile["kind"]
     if kind == "sentence_transformers":
         from jev_graph_builder.embed.local import SentenceTransformersEmbedder
 
-        return SentenceTransformersEmbedder(profile)
+        return SentenceTransformersEmbedder(profile, device)
     if kind == "openai_compatible":
         from jev_graph_builder.embed.openai_compat import OpenAICompatibleEmbedder
 

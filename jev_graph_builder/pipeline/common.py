@@ -255,6 +255,8 @@ def pending_in(batches: list[list[WorkItem]], selected: list[WorkItem]) -> list[
 
 
 RUNNABLE = {"missing", "stale", "pending", "failed", "running"}
+# ctx.cache key: names of earlier stages a stage sent items back to (the build re-runs them).
+REOPENED_STAGES = "reopened_stages"
 NEW = {"missing", "stale"}
 
 
@@ -365,9 +367,12 @@ async def run_item(ctx: Context, stage: Stage, item: WorkItem, report: RunReport
         logger.warning("item_failed", item_id=item.item_id, error=str(exc), status=final, exc_info=True)
 
 
-async def run_single_item(ctx: Context, stage: Stage, item: WorkItem, writer_factory: Callable[[], Awaitable[Writer]]) -> str | None:
-    """Corpus-wide finalize steps are ledger items too (so they resume and skip)."""
-    existing = (await ctx.ledger.existing(stage.name)).get(item.item_id)
+async def run_single_item(
+    ctx: Context, stage: Stage, item: WorkItem, writer_factory: Callable[[], Awaitable[Writer]], *, keep_going: bool = False,
+) -> str | None:
+    """Corpus-wide finalize steps are ledger items too (so they resume and skip). With `keep_going`, a
+    failure fails only this item (it is retried on the next build) instead of stopping the run."""
+    existing = await ctx.ledger.get(stage.name, item.item_id)
     if ctx.ledger.classify(item, existing) in (DONE, REVIEW):
         return None
     if not await ctx.ledger.claim(item, ctx.run_id or "", ctx.registry_version):
@@ -382,8 +387,11 @@ async def run_single_item(ctx: Context, stage: Stage, item: WorkItem, writer_fac
         await ctx.ledger.release(item)
         raise
     except Exception as exc:
-        await ctx.ledger.fail(item, f"{type(exc).__name__}: {exc}")
-        raise
+        final = await ctx.ledger.fail(item, f"{type(exc).__name__}: {exc}")
+        if not keep_going:
+            raise
+        log.get().warning("item_failed", stage=stage.name, item_id=item.item_id, error=str(exc), status=final, exc_info=True)
+        return None
 
 
 def done_writer(fn: Callable[[AsyncConnection], Awaitable[str | None]]) -> Writer:
