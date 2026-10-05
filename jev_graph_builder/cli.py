@@ -311,19 +311,47 @@ def serve(port: int = typer.Option(..., "--port"), host: str = typer.Option("127
 @app.command()
 def mcp(transport: str = typer.Option("stdio", "--transport", help="stdio | streamable-http"),
         port: Optional[int] = typer.Option(None, "--port", help="required for streamable-http"),
-        host: str = typer.Option("127.0.0.1", "--host", help="streamable-http only")) -> None:
+        host: str = typer.Option("127.0.0.1", "--host", help="streamable-http only"),
+        name: Optional[str] = typer.Option(None, "--name", help="server name the session sees (default: mcp_name setting)")) -> None:
     """MCP server: `graph_context` and `search` tools for Claude Code, Codex or OpenCode sessions.
     Uses `JGB_READER_DSN` when set (least privilege, §17)."""
     from jev_graph_builder.query.mcp_server import create_server, instructions_for
     from jev_graph_builder.registry.loader import Registry
 
-    server = create_server(instructions_for(Registry(_settings().resolved_registry())), *_reader_context())
+    settings = _settings()
+    server = create_server(name or settings.mcp_name, instructions_for(Registry(settings.resolved_registry())), *_reader_context())
     if transport == "stdio":
         server.run("stdio")
     elif transport == "streamable-http" and port:
         server.run("streamable-http", host=host, port=port)
     else:
         _fail(f"--transport {transport!r} needs to be stdio, or streamable-http with --port")
+
+
+@app.command("install-mcp")
+def install_mcp(client: str = typer.Option("claude", "--client", help="claude | pi | opencode | triggerfish"),
+                name: Optional[str] = typer.Option(None, "--name", help="server name the session sees (default: mcp_name setting)"),
+                repo: Optional[Path] = typer.Option(None, "--repo", help="repo whose sessions get the server (claude, opencode)"),
+                user: bool = typer.Option(False, "--user", help="every session of this user instead of one repo"),
+                classification: str = typer.Option("INTERNAL", "--classification",
+                                                   help="PUBLIC | INTERNAL | CONFIDENTIAL | RESTRICTED (Triggerfish only)")) -> None:
+    """Register this build directory's graph as an MCP server with an agent client, in one repo (`--repo`) or
+    for every session (`--user`), replacing one of the same name. Run it where you ran `build`."""
+    from jev_graph_builder.config import CONFIG_FILE_ENV, DEFAULT_CONFIG_FILE
+    from jev_graph_builder.mcp_install import InstallError, Server, install
+
+    if (repo is None) == (not user):
+        _fail("give one of --repo PATH or --user")
+    config = Path(os.environ.get(CONFIG_FILE_ENV, DEFAULT_CONFIG_FILE)).resolve()
+    if not config.is_file():
+        _fail(f"no {config.name} in {config.parent}: run install-mcp in the directory you ran build in")
+    settings = _settings()
+    server = Server(name or settings.mcp_name, Path(sys.argv[0]).resolve(), config, settings.resolved_registry())
+    try:
+        result = install(client, server, repo.resolve() if repo else None, classification)
+    except InstallError as exc:
+        _fail(str(exc))
+    _echo({"name": server.name, **result, "config": str(config), "registry": str(server.registry)})
 
 
 def _reader_context() -> tuple[Callable[[], Awaitable[Context]], Callable[[Context], Awaitable[None]]]:

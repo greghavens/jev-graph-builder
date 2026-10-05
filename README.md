@@ -105,15 +105,26 @@ Every command prints JSON on stdout. Progress and logs go to stderr.
 
 The server needs the directory you ran `build` in (its `jev-graph-builder.yaml` and `registry/`) and your TypeSafe key. In the examples, replace `/path/to/build-dir` with that directory and `/path/to/jev-graph-builder` with where you installed this tool.
 
+Name the server after what the documents cover (`vcf-docs` below), not after this tool: the agent sees tools as `mcp__vcf-docs__graph_context`, and a descriptive name helps it pick them for the right questions. Use that name as the client's server key and pass it with `--name` (or set `mcp_name` in `jev-graph-builder.yaml`) so the server reports the same name. The server also tells the session what the documents cover, from `corpus.yaml`'s `scope`.
+
+With Claude Code you can register it for every session instead of one project:
+
+```bash
+claude mcp add --scope user vcf-docs \
+  -e JEV_GRAPH_BUILDER_CONFIG=/path/to/build-dir/jev-graph-builder.yaml \
+  -e JGB_REGISTRY_PATH=/path/to/build-dir/registry \
+  -- /path/to/jev-graph-builder/.venv/bin/jev-graph-builder mcp --name vcf-docs
+```
+
 **Claude Code**: `.mcp.json` in your project:
 
 ```json
 {
   "mcpServers": {
-    "jev-graph": {
+    "vcf-docs": {
       "type": "stdio",
       "command": "/path/to/jev-graph-builder/.venv/bin/jev-graph-builder",
-      "args": ["mcp"],
+      "args": ["mcp", "--name", "vcf-docs"],
       "env": {
         "JEV_GRAPH_BUILDER_CONFIG": "/path/to/build-dir/jev-graph-builder.yaml",
         "JGB_REGISTRY_PATH": "/path/to/build-dir/registry",
@@ -127,9 +138,9 @@ The server needs the directory you ran `build` in (its `jev-graph-builder.yaml` 
 **Codex**: `~/.codex/config.toml`:
 
 ```toml
-[mcp_servers.jev-graph]
+[mcp_servers.vcf-docs]
 command = "/path/to/jev-graph-builder/.venv/bin/jev-graph-builder"
-args = ["mcp"]
+args = ["mcp", "--name", "vcf-docs"]
 env = { JEV_GRAPH_BUILDER_CONFIG = "/path/to/build-dir/jev-graph-builder.yaml", JGB_REGISTRY_PATH = "/path/to/build-dir/registry" }
 env_vars = ["TYPESAFE_API_KEY"]
 default_tools_approval_mode = "approve"   # otherwise `codex exec` refuses the calls
@@ -142,9 +153,9 @@ tool_timeout_sec = 300
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "jev-graph": {
+    "vcf-docs": {
       "type": "local",
-      "command": ["/path/to/jev-graph-builder/.venv/bin/jev-graph-builder", "mcp"],
+      "command": ["/path/to/jev-graph-builder/.venv/bin/jev-graph-builder", "mcp", "--name", "vcf-docs"],
       "enabled": true,
       "environment": {
         "JEV_GRAPH_BUILDER_CONFIG": "/path/to/build-dir/jev-graph-builder.yaml",
@@ -156,7 +167,7 @@ tool_timeout_sec = 300
 }
 ```
 
-To share one server between sessions, run `jev-graph-builder mcp --transport streamable-http --port 8765` and point clients at `http://127.0.0.1:8765/mcp`. The HTTP server has no authentication, so keep it on `127.0.0.1` (the default). To run the server with least privilege, set `JGB_READER_DSN` to a database user with the `jev_graph_builder_reader` role. That role can read the graph and can only add records of its own Jev calls and decisions.
+To share one server between sessions, run `jev-graph-builder mcp --name vcf-docs --transport streamable-http --port 8765` and point clients at `http://127.0.0.1:8765/mcp`. The HTTP server has no authentication, so keep it on `127.0.0.1` (the default). To run the server with least privilege, set `JGB_READER_DSN` to a database user with the `jev_graph_builder_reader` role. That role can read the graph and can only add records of its own Jev calls and decisions.
 
 ## Tests
 

@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     harness: HarnessChoice = "auto"
     # Where local compute runs (embedding, candidate kNN): `auto` takes the GPU when torch sees one.
     device: str = Field("auto", pattern=r"^(auto|cpu|cuda(:\d+)?)$")
+    # Name the MCP server reports to the agent session (`mcp --name` overrides it).
+    mcp_name: str = Field("jev-graph-builder", min_length=1)
     # Set when `dsn` points at the container `build` manages (profiles.postgres.<name>).
     local_postgres: str | None = None
     profiles: ActiveProfiles = Field(default_factory=ActiveProfiles)

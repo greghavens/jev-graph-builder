@@ -530,3 +530,77 @@ def test_torch_knn_matches_float64_brute_force_through_ties_and_groups(device: s
             d = 1.0 - x[idx] @ x[i]
             assert got[i] == idx[np.lexsort((idx, d))][:5].tolist()
         assert got[-1] == []
+
+
+def test_install_entries_run_this_build_directory_under_the_given_name() -> None:
+    from jev_graph_builder.mcp_install import Server, claude_add_args, opencode_entry, pi_entry, triggerfish_entry
+
+    s = Server("vcf-docs", Path("/v/bin/jev-graph-builder"), Path("/b/jev-graph-builder.yaml"), Path("/b/registry"))
+    env = {"JEV_GRAPH_BUILDER_CONFIG": "/b/jev-graph-builder.yaml", "JGB_REGISTRY_PATH": "/b/registry"}
+    assert claude_add_args(s, "user") == ["claude", "mcp", "add", "--scope", "user", "vcf-docs",
+                                          "-e", "JEV_GRAPH_BUILDER_CONFIG=/b/jev-graph-builder.yaml", "-e", "JGB_REGISTRY_PATH=/b/registry",
+                                          "--", "/v/bin/jev-graph-builder", "mcp", "--name", "vcf-docs"]
+    assert pi_entry(s) == {"command": "/v/bin/jev-graph-builder", "args": ["mcp", "--name", "vcf-docs"], "env": env}
+    assert opencode_entry(s) == {"type": "local", "command": ["/v/bin/jev-graph-builder", "mcp", "--name", "vcf-docs"],
+                                 "environment": env, "enabled": True}
+    assert triggerfish_entry(s, "PUBLIC")["classification"] == "PUBLIC"
+
+
+def test_install_json_clients_replace_their_entry_and_keep_the_rest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    from jev_graph_builder.mcp_install import InstallError, Server, install
+
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "pi"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    s = Server("vcf-docs", Path("/v/jgb"), Path("/b/c.yaml"), Path("/b/registry"))
+    (tmp_path / "pi").mkdir()
+    (tmp_path / "pi" / "mcp.json").write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}}))
+    assert install("pi", s)["replaced"] is False
+    assert install("pi", s)["replaced"] is True
+    assert set(json.loads((tmp_path / "pi" / "mcp.json").read_text())["mcpServers"]) == {"other", "vcf-docs"}
+    (tmp_path / "cfg" / "opencode").mkdir(parents=True)
+    (tmp_path / "cfg" / "opencode" / "opencode.jsonc").write_text('{\n  // comment\n  "mcp": {}\n}\n')
+    with pytest.raises(InstallError):
+        install("opencode", s)
+    assert "// comment" in (tmp_path / "cfg" / "opencode" / "opencode.jsonc").read_text()
+
+
+def test_install_into_a_repo_writes_that_repos_config_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    from jev_graph_builder.mcp_install import InstallError, Server, claude_entry, install
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    s = Server("vcf-docs", Path("/v/jgb"), Path("/b/c.yaml"), Path("/b/registry"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".mcp.json").write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}}))
+    assert install("claude", s, repo)["replaced"] is False
+    assert json.loads((repo / ".mcp.json").read_text())["mcpServers"] == {"other": {"command": "x"}, "vcf-docs": claude_entry(s)}
+    assert install("opencode", s, repo)["path"] == str(repo / "opencode.json")
+    assert "vcf-docs" in json.loads((repo / "opencode.json").read_text())["mcp"]
+    for client in ("pi", "triggerfish"):
+        with pytest.raises(InstallError):
+            install(client, s, repo)
+    assert not (tmp_path / "cfg").exists()
+
+
+def test_install_triggerfish_needs_a_level_and_keeps_a_backup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import yaml
+
+    from jev_graph_builder.mcp_install import InstallError, Server, install
+
+    monkeypatch.setenv("TRIGGERFISH_DATA_DIR", str(tmp_path))
+    s = Server("vcf-docs", Path("/v/jgb"), Path("/b/c.yaml"), Path("/b/registry"))
+    with pytest.raises(InstallError):
+        install("triggerfish", s, classification="PUBLIC")
+    (tmp_path / "triggerfish.yaml").write_text("# header\nmodels: {primary: x}\n")
+    with pytest.raises(InstallError):
+        install("triggerfish", s, classification="SECRET")
+    install("triggerfish", s, classification="PUBLIC")
+    text = (tmp_path / "triggerfish.yaml").read_text()
+    assert text.startswith("# header\n")
+    data = yaml.safe_load(text)
+    assert data["models"] == {"primary": "x"} and data["mcp"]["servers"]["vcf-docs"]["classification"] == "PUBLIC"
+    assert (tmp_path / "triggerfish.yaml.bak").is_file()

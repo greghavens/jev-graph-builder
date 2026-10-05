@@ -111,7 +111,8 @@ async def _check_mcp_context(ctx, query: str, answer: dict) -> None:
     async def close_ctx(_):
         return None
 
-    async with Client(create_server(instructions_for(ctx.reg), open_ctx, close_ctx)) as client:
+    async with Client(create_server("vcf-docs", instructions_for(ctx.reg), open_ctx, close_ctx)) as client:
+        assert client.server_info.name == "vcf-docs"
         assert {t.name for t in (await client.list_tools()).tools} == {"graph_context", "search"}
         res = await client.call_tool("graph_context", {"query": query})
         assert not res.is_error, res.content

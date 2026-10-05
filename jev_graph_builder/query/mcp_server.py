@@ -20,7 +20,6 @@ from jev_graph_builder.query.graphrag import context, public
 from jev_graph_builder.query.search import search as do_search
 from jev_graph_builder.registry.loader import Registry
 
-SERVER_NAME = "jev-graph-builder"
 _log = log.get(__name__)
 
 
@@ -29,8 +28,9 @@ def instructions_for(reg: Registry) -> str:
     return f"{reg.policy('query.mcp_instructions')}\n\n{reg.corpus['scope']}"
 
 
-def create_server(instructions: str, open_ctx: Callable[[], Awaitable[Context]], close_ctx: Callable[[Context], Awaitable[None]]) -> MCPServer:
-    """`instructions` tell the session when to call the tools (`instructions_for` builds them from the Registry)."""
+def create_server(name: str, instructions: str, open_ctx: Callable[[], Awaitable[Context]], close_ctx: Callable[[Context], Awaitable[None]]) -> MCPServer:
+    """`name` is the server name the session sees; `instructions` tell it when to call the tools
+    (`instructions_for` builds them from the Registry)."""
     state: dict[str, Context] = {}
 
     @asynccontextmanager
@@ -41,7 +41,7 @@ def create_server(instructions: str, open_ctx: Callable[[], Awaitable[Context]],
         finally:
             await close_ctx(state["ctx"])
 
-    server = MCPServer(SERVER_NAME, instructions=instructions, lifespan=lifespan)
+    server = MCPServer(name, instructions=instructions, lifespan=lifespan)
 
     @server.tool()
     async def graph_context(query: str) -> dict[str, Any]:
