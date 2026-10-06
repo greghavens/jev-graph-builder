@@ -41,7 +41,7 @@ from jev_graph_builder.pipeline.common import (
     write_decisions,
 )
 from jev_graph_builder.pipeline.grounding import UNGROUNDED, ground
-from jev_graph_builder.pipeline.s6_links import relation_definitions
+from jev_graph_builder.pipeline.s6_links import QS_LINK, relation_definitions
 from jev_graph_builder.registry.loader import OUTPUT_RULES_QS
 from jev_graph_builder.store import knn, repo
 
@@ -50,7 +50,9 @@ DERIVED = ("retrieval_pairs", "rerank_soft_labels")
 QA_KINDS = ("qa_single", "qa_multihop")
 CACHE_KEY = "s8_records"
 TRIPLE_TEXT_KEY = "s8_triple_chunks"
-TRIPLES_FORMAT = "with-chunk-text"  # triples carry their chunks' title and text, so an export reads without the database
+# Payload formats of code-exported templates: a new format redoes their items. Both carry the text of every
+# chunk they name, so an export reads without the database.
+PAYLOAD_FORMATS = {"triples": "with-chunk-text-and-definitions", "retrieval_pairs": "with-distinct-passage-text"}
 RULES_KEY = "s8_output_rules"  # per example: the output-rule checks of each authoring round (§1.4)
 DEFAULT_FIELDS = {"prompt": "question", "answer": "answer"}
 QS_DEDUP = "dedup"
@@ -112,6 +114,19 @@ def component_keys(edges: list[tuple[str, str]], chunk_doc: dict[str, str]) -> d
             if ra != rb:
                 parent[max(ra, rb)] = min(ra, rb)
     return {c: find(d) for c, d in chunk_doc.items()}
+
+
+def predicate_definition(ctx: Context, rel: str) -> str:
+    """The ontology's definition; the contradiction relation is the link question set's contradiction
+    question, worded about the triple's subject and object instead of the link state's two chunks."""
+    definition = relation_definitions(ctx).get(rel, {}).get("definition", "")
+    if definition or rel != ctx.reg.policy("link.contradiction_relation"):
+        return definition
+    qs = ctx.reg.question_set(QS_LINK)
+    text = qs.questions[ctx.reg.policy("link.contradiction_question")]["instructions"]
+    for field, role in zip(qs.state_template, ("subject", "object")):
+        text = text.replace(f"`{field}`", f"the {role}")
+    return text[:1].upper() + text[1:]
 
 
 class TrainingStage(Stage):
@@ -194,10 +209,11 @@ class TrainingStage(Stage):
         raise ValueError(f"unknown training template kind `{kind}`")
 
     def limit(self, selected: list[WorkItem], n: int) -> list[WorkItem]:
-        """`--limit` is shared round-robin across templates, so a sample covers every template."""
-        by_tpl: dict[str, list[WorkItem]] = defaultdict(list)
+        """`--limit` is shared round-robin across templates (and a triples template's edges and claims),
+        so a sample covers each of them."""
+        by_tpl: dict[tuple[str, str], list[WorkItem]] = defaultdict(list)
         for i in selected:
-            by_tpl[i.payload["template"]].append(i)
+            by_tpl[(i.payload["template"], i.payload["source"].get("triple", ""))].append(i)
         queues = [by_tpl[t] for t in sorted(by_tpl)]
         out: list[WorkItem] = []
         for rank in range(max(map(len, queues), default=0)):
@@ -209,7 +225,7 @@ class TrainingStage(Stage):
         for tpl in enabled_templates(ctx, self.kinds):
             for src in await self.sources(ctx, tpl):
                 payload = {"template": tpl["name"], "kind": tpl["kind"], "source": src}
-                fmt = (TRIPLES_FORMAT,) if tpl["kind"] == "triples" else ()
+                fmt = (PAYLOAD_FORMATS[tpl["kind"]],) if tpl["kind"] in PAYLOAD_FORMATS else ()
                 items.append(self.item(ctx, f"{tpl['name']}:{src['source_key']}", tpl, src, *fmt, payload=payload))
         return items
 
@@ -453,8 +469,7 @@ class TrainingStage(Stage):
             return chunks.get(cid) or {"chunk_id": cid, "title": "", "text": ""}
 
         if src["triple"] == "edge":
-            payload = {"subject": chunk(src["src_id"]), "predicate": src["rel"],
-                       "predicate_definition": relation_definitions(ctx).get(src["rel"], {}).get("definition", ""),
+            payload = {"subject": chunk(src["src_id"]), "predicate": src["rel"], "predicate_definition": predicate_definition(ctx, src["rel"]),
                        "object": chunk(src["dst_id"]), "directed": src["directed"], "weight": src["weight"], "admitted_by": src["decision_ids"]}
             chunk_ids, edge_ids = [src["src_id"], src["dst_id"]], [src["edge_id"]]
         else:
@@ -485,15 +500,26 @@ class TrainingStage(Stage):
         query = src["payload"]["prompt"]
         positives = list(src["source_chunk_ids"])
         cands = await self._neighbours(ctx, query, positives, ctx.reg.policy("training.retrieval.negative_candidates"))
+        texts = await self._texts(ctx, positives)
+        # The same passage recurs across doc versions under other chunk IDs: one copy, and none of a positive.
+        seen = {" ".join(t.split()) for t in texts.values()}
+        distinct = []
+        for c in cands:
+            key = " ".join(c["text"].split())
+            if key not in seen:
+                seen.add(key)
+                distinct.append(c)
         results: list[AskResult] = []
         negatives = []
-        for c in cands:
+        for c in distinct:
             r = await ctx.jev.ask(tpl["question_sets"]["negative"], {"query": query, "passage": c["text"]}, "negative", sha256_hex(query, c["chunk_id"]))
             results.append(r)
             if r.single.outcome == REJECT:  # Jev: the passage does NOT answer the query → a hard negative
                 negatives.append(c["chunk_id"])
         negatives = negatives[: ctx.reg.policy("training.retrieval.max_negatives")]
-        payload = {"query": query, "positive_chunk_ids": positives, "negative_chunk_ids": negatives, "from_example": src["example_id"]}
+        texts |= {c["chunk_id"]: c["text"] for c in distinct}
+        payload = {"query": query, "positives": [{"chunk_id": c, "text": texts.get(c, "")} for c in positives],
+                   "negatives": [{"chunk_id": c, "text": texts[c]} for c in negatives], "from_example": src["example_id"]}
         status = ACCEPTED if negatives else REJECTED
         return self._writer(ctx, tpl, src["source_key"], payload, status, [*positives, *negatives], [], results)
 

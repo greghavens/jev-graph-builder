@@ -608,7 +608,10 @@ def test_install_triggerfish_needs_a_level_and_keeps_a_backup(tmp_path: Path, mo
 
 
 def test_training_limit_is_shared_across_templates():
-    items = [WorkItem("training", f"{t}:{n}", "h", {"template": t}) for t in ("triples", "qa_single") for n in range(50)]
-    picked = TrainingStage().limit(items, 10)
-    assert [i.payload["template"] for i in picked].count("qa_single") == 5
+    def item(t: str, n: int, triple: str = "") -> WorkItem:
+        return WorkItem("training", f"{t}:{triple}{n}", "h", {"template": t, "source": {"triple": triple} if triple else {}})
+
+    items = [*(item("triples", n, k) for k in ("edge", "claim") for n in range(50)), *(item("qa_single", n) for n in range(50))]
+    picked = [(i.payload["template"], i.payload["source"].get("triple")) for i in TrainingStage().limit(items, 9)]
+    assert picked.count(("qa_single", None)) == picked.count(("triples", "edge")) == picked.count(("triples", "claim")) == 3
     assert len(TrainingStage().limit(items[:3], 10)) == 3

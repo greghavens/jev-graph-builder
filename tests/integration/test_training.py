@@ -65,7 +65,7 @@ async def test_an_example_the_harness_never_fixes_is_rejected(ctx, env) -> None:
             assert e["status"] == "rejected" and e["rule_checks"] == ["reject"] * (rounds + 1), (e["status"], e["rule_checks"])
 
 
-async def test_triples_carry_the_text_they_relate(ctx) -> None:
+async def test_code_exported_examples_carry_the_text_they_name(ctx) -> None:
     await _run_all(ctx)
     rows = await ctx.db.fetch("SELECT payload FROM training_examples WHERE template = 'triples' AND status = 'accepted'")
     assert rows
@@ -75,6 +75,11 @@ async def test_triples_carry_the_text_they_relate(ctx) -> None:
         assert all(e["text"] for e in ends), p
         if "predicate" in p:
             assert p["predicate_definition"], p
+    pairs = await ctx.db.fetch("SELECT payload FROM training_examples WHERE template = 'retrieval_pairs' AND status = 'accepted'")
+    for r in pairs:
+        assert all(c["text"] for c in [*r["payload"]["positives"], *r["payload"]["negatives"]]), r["payload"]
+        texts = [" ".join(c["text"].split()) for c in [*r["payload"]["positives"], *r["payload"]["negatives"]]]
+        assert len(texts) == len(set(texts)), r["payload"]  # no negative repeats another passage of the pair
 
 
 async def test_a_sampled_run_derives_from_every_accepted_example(ctx) -> None:
