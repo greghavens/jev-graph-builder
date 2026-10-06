@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +58,8 @@ class FakeJev:
         self.fail_next: int = 0  # simulate an outage for N calls
         self.no_credits = False  # simulate an account with no credits: every call answers 402
         self.refused = 0  # calls answered 402
+        # (question set, question, state) -> an answer, or None for the default; lets a test judge the content
+        self.judge: Callable[[str, str, Any], Any] | None = None
 
     def candidates(self, instructions: str) -> dict[str, str]:
         found = {qs: logical for pat, qs, logical in self.index if pat.match(instructions)}
@@ -75,9 +78,12 @@ class FakeJev:
         qs = min(sorted(common), key=lambda n: self.sizes[n])
         return {k: (qs, c[qs]) for k, c in per_key.items()}
 
-    def answer(self, body: dict[str, Any], ident: tuple[str, str]) -> dict[str, Any]:
+    def answer(self, body: dict[str, Any], ident: tuple[str, str], state: Any = None) -> dict[str, Any]:
         qs, logical = ident
         override = self.overrides.get((qs, logical))
+        if self.judge is not None:
+            judged = self.judge(qs, logical, state)
+            override = judged if judged is not None else override
         t = body["type"]
         if t == "noul":
             p = override if override is not None else (NO if (qs, logical) in NO_QUESTIONS else YES)
@@ -104,7 +110,7 @@ class FakeJev:
             payload = json.loads(request.content)
             self.calls.append(payload)
             ident = self.identify_call(payload["questions"])
-            answers = {k: self.answer(q, ident[k]) for k, q in payload["questions"].items()}
+            answers = {k: self.answer(q, ident[k], payload.get("state")) for k, q in payload["questions"].items()}
             chars = len(json.dumps(payload))
             return httpx2.Response(200, json={"model": payload["model"], "answers": answers,
                                               "usage": {"input_tokens": chars // 4, "output_tokens": len(answers) * 8}},
@@ -153,6 +159,8 @@ def _ids(value: Any, key: str = "id") -> list[str]:
 
 
 def fake_record(prompt: str, rec: dict[str, Any]) -> dict[str, Any]:
+    revise = rec.get("revise")
+    rec = {k: v for k, v in rec.items() if k != "revise"}  # draw from the source, not from the revision request
     text = rec.get("text") or ""
     sentence = _sentence(rec)
     if prompt == "extract":
@@ -161,7 +169,10 @@ def fake_record(prompt: str, rec: dict[str, Any]) -> dict[str, Any]:
         return {"id": rec["id"], "entities": ents, "claims": claims,
                 "title": text.splitlines()[0][:60] if text else "untitled", "keywords": [e["name"] for e in ents][:3]}
     if prompt == "gen_qa_single":
-        return {"id": rec["id"], "question": f"What does the passage say about {sentence.split()[0]}?", "answer": sentence, "evidence": sentence}
+        subject = sentence.split()[0]
+        # a request to revise (§1.4) gets a question that names its subject instead of pointing at "the passage"
+        question = f"What is true of {subject}?" if revise else f"What does the passage say about {subject}?"
+        return {"id": rec["id"], "question": question, "answer": sentence, "evidence": sentence}
     if prompt == "gen_instruction":
         return {"id": rec["id"], "instruction": "Summarize the operational rule in this passage.", "response": sentence, "evidence": sentence}
     if prompt == "gen_qa_multihop":
@@ -214,6 +225,7 @@ class FakeHarness:
         self.name = name
         self.runs: list[RunSpec] = []
         self.crash_after_records = crash_after_records
+        self.ignore_revisions = False
         self.relation_proposal: dict[str, Any] | None = None  # set: propose_relations proposes it, citing every example
 
     async def run(self, spec: RunSpec) -> RunResult:
@@ -226,6 +238,8 @@ class FakeHarness:
         if prompt.meta.get("output_mode") == "file":
             inp = spec.workspace / spec.variables["input_file"]
             records = [json.loads(line) for line in inp.read_text().splitlines() if line.strip()]
+            if self.ignore_revisions:  # a harness that rewrites nothing: answers a revision request as before
+                records = [{k: v for k, v in r.items() if k != "revise"} for r in records]
             if self.crash_after_records is not None:
                 records = records[: self.crash_after_records]
             out = spec.workspace / spec.variables["output_file"]

@@ -25,6 +25,7 @@ question_sets:
     metadata_derivable: 1
     metadata_field: 1
     ontology_support: 1
+    output_rules: 1
     query_route: 2
     rag_passage: 2
     relation_overlap: 1
@@ -46,10 +47,10 @@ prompts:
     continue_job: 1
     disambiguate_relations: 1
     extract: 2
-    gen_graph_reasoning: 1
-    gen_instruction: 1
-    gen_qa_multihop: 1
-    gen_qa_single: 1
+    gen_graph_reasoning: 2
+    gen_instruction: 2
+    gen_qa_multihop: 2
+    gen_qa_single: 2
     propose_relations: 1
     repair_output: 1
 
@@ -315,7 +316,7 @@ audit:
     level: 0
     max_members_in_prompt: 30
     max_failed_fraction: 0.2
-  verification_question_sets: [extract_verify, extract_verify_fanout, summary_verify, summary_verify_fanout, link_verify, citation_check, train_qa, train_instruction, train_multihop]
+  verification_question_sets: [extract_verify, extract_verify_fanout, summary_verify, summary_verify_fanout, link_verify, citation_check, train_qa, train_instruction, train_multihop, output_rules]
   edge_requirements:
     chunk: [[link, link_fanout], [link_verify]]
   # §3 P3: harness output that is accepted must carry an accepting verification decision.
@@ -329,7 +330,7 @@ audit:
     - {name: community_summaries_verified, table: communities, id: community_id, decisions_column: decision_ids, when: "t.summary IS NOT NULL AND t.summary <> ''",
        question_sets: [citation_check], subject_kind: community, corpus_filter: "t.corpus_id = %(corpus)s"}
     - {name: training_examples_verified, table: training_examples, id: example_id, decisions_column: decision_ids, when: "t.harness_run_id IS NOT NULL",
-       question_sets: [train_qa, train_instruction, train_multihop, citation_check], subject_kind: training_example,
+       question_sets: [train_qa, train_instruction, train_multihop, citation_check, output_rules], subject_kind: training_example,
        corpus_filter: "true"}
 
 training:
@@ -345,6 +346,9 @@ training:
     fractions: {train: 0.9, validation: 0.05, test: 0.05}
   retrieval: {negative_candidates: 20, max_negatives: 3}
   rerank: {candidates: 10}
+  # §1.4: a generated example that fails an output rule goes back to the harness with the failed rules,
+  # at most this many times; what still fails is rejected.
+  output_rules: {reauthor_rounds: 2}
 
 # ------------------------------------------------------------------ query
 search:

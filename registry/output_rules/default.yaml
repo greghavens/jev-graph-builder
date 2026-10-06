@@ -1,0 +1,19 @@
+# Output rules (Q&A spec §1.4): what every finished training example (and `ask` answer) must look like.
+# Each rule is a Noul whose instructions state the passing condition; together they form the question set
+# `output_rules`, calibrated like any other. A corpus may add rules (`corpus.yaml: output_rules`) but not
+# remove these: removing one is a Registry diff approved at the human gate.
+version: 1
+jev_model: jev-1.13.0
+purpose: "Shipped output rules for harness-written questions and answers (Q&A spec §1.4). A failure sends the output back to the harness with the rule as feedback."
+state_template:
+  prompt: {untrusted: true}
+  answer: {max_tokens_ref: policies.training.answer_state_tokens, untrusted: true}
+rules:
+  answer_no_source_reference:
+    instructions: "`answer` states its information directly. It does not refer to the documentation, the passage, the text, the context or the source it was drawn from (for example \"according to the passage\", \"the document says\" or \"as described above\")."
+  prompt_no_source_reference:
+    instructions: "`prompt` names its subject and can be understood on its own. It does not refer to \"the passage\", \"the text\", \"this document\", \"the context\" or \"the source\"."
+  prompt_no_leak:
+    instructions: "`prompt` does not state or give away the information that `answer` provides."
+  unanswerable_marked:
+    instructions: "Either `answer` answers `prompt`, or it plainly says that `prompt` cannot be answered; it does not present a guess or an answer to a different question as the answer."

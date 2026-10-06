@@ -25,9 +25,11 @@ app = typer.Typer(no_args_is_help=True, add_completion=False, help=__doc__)
 registry_app = typer.Typer(no_args_is_help=True, help="Registry versions: diff, lint, approve, activate.")
 qs_app = typer.Typer(no_args_is_help=True, help="Question sets: draft, report (§7.3).")
 audit_app = typer.Typer(no_args_is_help=True, help="Audits: drift, graph (§16).")
+train_app = typer.Typer(no_args_is_help=True, help="Training sets from the graph (Q&A spec §2): build, export.")
 app.add_typer(registry_app, name="registry")
 app.add_typer(qs_app, name="qs")
 app.add_typer(audit_app, name="audit")
+app.add_typer(train_app, name="train")
 
 _state: dict[str, Any] = {"harness": None, "device": None}
 
@@ -286,6 +288,45 @@ def plan() -> None:
         return {"stages": [s.as_dict() for s in p.stages], "totals": p.totals()}
 
     _echo(_run(go))
+
+
+# ------------------------------------------------------------------- training
+
+
+@train_app.command("build")
+def train_build(templates: list[str] = typer.Argument(None, help="Templates to build (default: corpus.yaml training_templates)"),
+                limit: Optional[int] = LimitOpt, sample: Optional[float] = SampleOpt, dry_run: bool = DryOpt,
+                resume: bool = ResumeOpt, concurrency: Optional[int] = ConcOpt) -> None:
+    """S8: generate, filter, dedup and split training examples. Idempotent; resumes from the ledger."""
+    from jev_graph_builder.pipeline.s8_training import DerivedTrainingStage, TrainingStage
+
+    opts = _opts(limit, sample, dry_run, resume, concurrency)
+
+    async def go(ctx: Context) -> Any:
+        unknown = sorted(set(templates or []) - set(ctx.reg.training_template_names()))
+        if unknown:
+            raise typer.BadParameter(f"unknown training templates: {', '.join(unknown)}; known: {', '.join(ctx.reg.training_template_names())}")
+        if templates:
+            ctx.cache["train_only"] = list(templates)
+        reports = []
+        for st in (TrainingStage(), DerivedTrainingStage()):
+            rep = await run_stage(ctx, st, opts, {"templates": templates, "limit": limit, "sample": sample})
+            reports.append(rep.as_dict())
+            if rep.paused:
+                break
+        return reports
+
+    _echo(_run(go))
+
+
+@train_app.command("export")
+def train_export(out: Path = typer.Option(Path("training-export"), "--out", help="Output directory"),
+                 fmt: str = typer.Option("jsonl", "--format", help="jsonl | parquet | hf"),
+                 templates: list[str] = typer.Option(None, "--template", help="Only these templates (repeatable)")) -> None:
+    """Write accepted examples per template and split, each with full provenance (R-090)."""
+    from jev_graph_builder.pipeline.s8_training import export
+
+    _echo(_run(lambda ctx: export(ctx, out, fmt, list(templates) if templates else None), migrate_db=False))
 
 
 # ------------------------------------------------------------------- query

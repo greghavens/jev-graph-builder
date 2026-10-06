@@ -8,5 +8,5 @@ scope: >-
 languages: [en]
 doc_sources: ["docs/**/*.md", "docs/**/*.pdf", "docs/**/*.docx", "docs/**/*.html", "docs/**/*.txt"]
 uses: [semantic_search, graph_rag, training_data]
-training_templates: [qa_single, instruction, qa_multihop, graph_reasoning, triples, retrieval_pairs, rerank_soft_labels]
+training_templates: [qa_single, qa_multihop, retrieval_pairs, triples]   # Q&A spec §6 Q5
 split_policy: component

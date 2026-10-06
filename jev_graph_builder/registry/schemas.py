@@ -17,7 +17,9 @@ CORPUS = {
         "uses": _STR_LIST,
         "training_templates": _STR_LIST,
         "split_policy": _STR,
+        "output_rules": {"type": "object", "additionalProperties": {"$ref": "#/$defs/rule"}},
     },
+    "$defs": {"rule": {"type": "object", "required": ["instructions"], "properties": {"instructions": _STR}, "additionalProperties": False}},
 }
 
 ONTOLOGY_ITEM = {
@@ -109,6 +111,19 @@ QUESTION_SET = {
             "properties": {"accept_when": {"$ref": "#/$defs/cond"}, "threshold": _THRESHOLD},
             "additionalProperties": False,
         },
+    },
+    "additionalProperties": False,
+}
+
+OUTPUT_RULES = {
+    "type": "object",
+    "required": ["version", "jev_model", "state_template", "rules"],
+    "properties": {
+        "version": {"type": "integer", "minimum": 1},
+        "jev_model": _STR,
+        "purpose": _STR,
+        "state_template": {"type": "object", "additionalProperties": STATE_FIELD},
+        "rules": {"type": "object", "minProperties": 1, "additionalProperties": CORPUS["$defs"]["rule"]},
     },
     "additionalProperties": False,
 }

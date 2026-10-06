@@ -26,6 +26,18 @@ from jev_graph_builder.query.search import search
 pytestmark = pytest.mark.integration
 
 
+@pytest.fixture()
+def registry_dir(registry_dir: Path) -> Path:
+    """Item 7 checks every template, not only the corpus default's four (Q&A spec §6 Q5)."""
+    import yaml
+
+    path = registry_dir / "corpus.yaml"
+    corpus = yaml.safe_load(path.read_text())
+    corpus["training_templates"] = sorted(p.stem for p in (registry_dir / "training" / "templates").glob("*.yaml"))
+    path.write_text(yaml.safe_dump(corpus, sort_keys=False))
+    return registry_dir
+
+
 async def _count(ctx, table: str, where: str = "") -> int:
     row = await ctx.db.fetchone(f"SELECT count(*) AS n FROM {table} {where}")  # noqa: S608
     return row["n"]

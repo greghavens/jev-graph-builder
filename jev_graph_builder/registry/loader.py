@@ -25,6 +25,7 @@ from jev_graph_builder.registry import schemas
 PROPOSALS_DIR = ".proposals"
 _EXCLUDED_TOP = {PROPOSALS_DIR, ".git"}
 _QS_FILE = re.compile(r"^(?P<name>[a-z0-9_]+)@(?P<version>\d+)\.ya?ml$")
+OUTPUT_RULES_QS, OUTPUT_RULES_FILE = "output_rules", Path("output_rules") / "default.yaml"
 _PROMPT_FILE = re.compile(r"^(?P<name>[a-z0-9_]+)@(?P<version>\d+)\.md$")
 
 
@@ -234,6 +235,11 @@ class Registry:
             if not m:
                 raise RegistryError(f"question set file name must be <name>@<ver>.yaml: {p.name}")
             out[(m["name"], int(m["version"]))] = p
+        rules = self.root / OUTPUT_RULES_FILE
+        if rules.is_file():
+            if any(n == OUTPUT_RULES_QS for n, _ in out):
+                raise RegistryError(f"`{OUTPUT_RULES_QS}` is built from {OUTPUT_RULES_FILE}; it cannot also be a question set file")
+            out[(OUTPUT_RULES_QS, int(_load_yaml(rules)["version"]))] = rules
         return out
 
     def question_set_names(self) -> list[str]:
@@ -261,12 +267,14 @@ class Registry:
     def _load_qs(self, path: Path) -> QuestionSet:
         if path in self._qs_cache:
             return self._qs_cache[path]
-        doc = _load_yaml(path)
+        if path == self.root / OUTPUT_RULES_FILE:
+            doc = self._output_rules_doc(path)
+        else:
+            doc = _load_yaml(path)
+            m = _QS_FILE.match(path.name)
+            if m is None or doc.get("name") != m["name"] or int(doc.get("version", 0)) != int(m["version"]):
+                raise RegistryError(f"{path.name}: name/version do not match file name")
         _validate(doc, schemas.QUESTION_SET, path)
-        m = _QS_FILE.match(path.name)
-        assert m is not None
-        if doc["name"] != m["name"] or int(doc["version"]) != int(m["version"]):
-            raise RegistryError(f"{path.name}: name/version do not match file name")
         qs = self._qs_cache[path] = QuestionSet(
             name=doc["name"],
             version=int(doc["version"]),
@@ -279,6 +287,27 @@ class Registry:
             raw=doc,
         )
         return qs
+
+    def _output_rules_doc(self, path: Path) -> dict[str, Any]:
+        """§1.4: the shipped rules plus the corpus's additions, as one question set that passes when every rule holds.
+        A corpus rule may not reuse a shipped rule's name: the defaults cannot be replaced from corpus.yaml."""
+        doc = _load_yaml(path)
+        _validate(doc, schemas.OUTPUT_RULES, path)
+        added = self.corpus.get("output_rules") or {}
+        clash = sorted(set(added) & set(doc["rules"]))
+        if clash:
+            raise RegistryError(f"corpus.yaml output_rules cannot redefine shipped rules: {', '.join(clash)}")
+        rules = {**doc["rules"], **added}
+        return {
+            "name": OUTPUT_RULES_QS, "version": doc["version"], "jev_model": doc["jev_model"], "purpose": doc.get("purpose", ""),
+            "state_template": doc["state_template"],
+            "questions": {n: {"type": "noul", "instructions": r["instructions"]} for n, r in rules.items()},
+            "gating": {"accept_when": {"all": [{"q": n, "is": "yes"} for n in rules]}},
+        }
+
+    def output_rule(self, name: str) -> str:
+        """The passing condition of one output rule: the feedback a failed example goes back to the harness with."""
+        return self.question_set(OUTPUT_RULES_QS).questions[name]["instructions"]
 
     # ---------- prompts & schemas ----------
     def prompt(self, ref: str) -> Prompt:

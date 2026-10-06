@@ -32,7 +32,7 @@ from typing import Any
 import numpy as np
 
 from jev_graph_builder.ids import sha256_hex, unit_fraction
-from jev_graph_builder.jev.gating import ACCEPT, REJECT
+from jev_graph_builder.jev.gating import ACCEPT, REJECT, says_no
 from jev_graph_builder.jev.service import AskResult, Decision
 from jev_graph_builder.ledger.ledger import DONE, REVIEW, WorkItem
 from jev_graph_builder.pipeline.citations import check_sentences
@@ -42,12 +42,15 @@ from jev_graph_builder.pipeline.common import (
 )
 from jev_graph_builder.pipeline.grounding import UNGROUNDED, ground
 from jev_graph_builder.pipeline.s6_links import relation_definitions
+from jev_graph_builder.registry.loader import OUTPUT_RULES_QS
 from jev_graph_builder.store import knn, repo
 
 GENERATED = ("qa_single", "instruction", "qa_multihop", "graph_reasoning", "triples")
 DERIVED = ("retrieval_pairs", "rerank_soft_labels")
 QA_KINDS = ("qa_single", "qa_multihop")
 CACHE_KEY = "s8_records"
+RULES_KEY = "s8_output_rules"  # per example: the output-rule checks of each authoring round (§1.4)
+DEFAULT_FIELDS = {"prompt": "question", "answer": "answer"}
 QS_DEDUP = "dedup"
 ACCEPTED, REJECTED, IN_REVIEW, DUPLICATE = "accepted", "rejected", "review", "duplicate"
 
@@ -116,7 +119,7 @@ class TrainingStage(Stage):
     @property
     def deps(self) -> Deps:  # type: ignore[override]
         return Deps(question_sets=("train_qa", "train_instruction", "train_multihop", "train_negative", "rag_passage",
-                                   "citation_check", QS_DEDUP),
+                                   "citation_check", QS_DEDUP, OUTPUT_RULES_QS),
                     prompts=("gen_qa_single", "gen_instruction", "gen_qa_multihop", "gen_graph_reasoning"),
                     policies=("training",), corpus=True, embedding=True)
 
@@ -252,12 +255,15 @@ class TrainingStage(Stage):
             by_item = {i.item_id: r for i, r in zip(group, records, strict=True)}
             todo = [by_item[i.item_id] for i in todo_items]
             cap = ctx.reg.profile("harness", profile).get("max_batch_records") or len(todo)
+            rules = ctx.reg.question_set(OUTPUT_RULES_QS).questions
+            variables = {"template": tpl, "output_rules": [q["instructions"] for q in rules.values()]}
             for start in range(0, len(todo), cap):
                 part = todo[start: start + cap]
-                outcome = await ctx.jobs.run_job(name, tpl["prompt"], part, profile, variables={"template": tpl})
+                outcome = await ctx.jobs.run_job(name, tpl["prompt"], part, profile, variables=variables)
                 for r in part:
                     run_id = outcome.harness_run_ids[-1] if outcome.harness_run_ids else None
                     cache[f"{name}:{r['id']}"] = (outcome.records.get(r["id"]), profile, outcome.missing.get(r["id"], ""), run_id)
+                await self.reauthor(ctx, name, tpl, part, profile, variables)
 
         # Every started job finishes (its output and harness run are kept for a resume) before a stop is raised.
         results = await asyncio.gather(*(run(b, todo) for b, todo in pending_in(list(by_tpl.values()), items)),
@@ -265,6 +271,48 @@ class TrainingStage(Stage):
         errors = [r for r in results if isinstance(r, BaseException)]
         if stopped or errors:
             raise (stopped or errors)[0]
+
+    # ------------------------------------------------------------- output rules (§1.4)
+
+    async def check_rules(self, ctx: Context, tpl: dict[str, Any], src_key: str, rec: dict[str, Any]) -> AskResult:
+        fields = tpl.get("fields") or DEFAULT_FIELDS
+        return await ctx.jev.ask(OUTPUT_RULES_QS, {"prompt": rec[fields["prompt"]], "answer": rec[fields["answer"]]},
+                                 "training_example", sha256_hex(tpl["name"], src_key, rec))
+
+    @staticmethod
+    def failed_rules(result: AskResult) -> list[str]:
+        d = result.single
+        return [q for q, a in d.answers.items() if says_no(a, d.threshold_for(q))]
+
+    async def reauthor(self, ctx: Context, name: str, tpl: dict[str, Any], part: list[dict[str, Any]], profile: str,
+                       variables: dict[str, Any]) -> None:
+        """Check each generated record against the output rules; one that breaks a rule goes back to the harness
+        with its previous output and the broken rules, up to `training.output_rules.reauthor_rounds` times.
+        What still breaks a rule is rejected when the example is written."""
+        cache = ctx.cache[CACHE_KEY]
+        checks: dict[str, list[AskResult]] = ctx.cache.setdefault(RULES_KEY, {})
+        by_id = {r["id"]: r for r in part}
+        todo = [i for i in by_id if cache[f"{name}:{i}"][0] is not None]
+        for round_ in range(ctx.reg.policy("training.output_rules.reauthor_rounds") + 1):
+            results = await asyncio.gather(*(self.check_rules(ctx, tpl, i, cache[f"{name}:{i}"][0]) for i in todo))
+            failing: dict[str, list[str]] = {}
+            for i, r in zip(todo, results, strict=True):
+                checks.setdefault(f"{name}:{i}", []).append(r)
+                if r.single.outcome == REJECT:
+                    failing[i] = self.failed_rules(r)
+            if not failing or round_ == ctx.reg.policy("training.output_rules.reauthor_rounds"):
+                return
+            revise = [{**by_id[i], "revise": {"previous": {k: v for k, v in cache[f"{name}:{i}"][0].items() if k != "id"},
+                                              "failed_rules": [ctx.reg.output_rule(q) for q in failing[i]]}} for i in sorted(failing)]
+            outcome = await ctx.jobs.run_job(name, tpl["prompt"], revise, profile, variables=variables)
+            run_id = outcome.harness_run_ids[-1] if outcome.harness_run_ids else None
+            for i in failing:
+                if i in outcome.records:
+                    cache[f"{name}:{i}"] = (outcome.records[i], profile, "", run_id)
+            # a record the harness did not rewrite keeps its last (failing) check
+            todo = [i for i in sorted(failing) if i in outcome.records]
+            if not todo:
+                return
 
     # ------------------------------------------------------------- filters
 
@@ -284,6 +332,14 @@ class TrainingStage(Stage):
     def _writer(self, ctx: Context, tpl: dict[str, Any], src_key: str, payload: dict[str, Any], status: str,
                 chunk_ids: list[str], edge_ids: list[str], results: list[AskResult | Decision], harness_run_id: str | None = None,
                 review_reason: str | None = None) -> Writer:
+        rules = ctx.cache.get(RULES_KEY, {}).get(f"{tpl['name']}:{src_key}", [])
+        if rules:  # §1.4: every authoring round's rule check is provenance; the last one decides
+            results = [*rules, *results]
+            last = rules[-1].single.outcome
+            if last == REJECT:
+                status = REJECTED
+            elif last != ACCEPT and status == ACCEPTED:
+                status, review_reason = IN_REVIEW, "output_rules_uncertain"
         decision_ids = [d.decision_id for r in results for d in (r.decisions if isinstance(r, AskResult) else [r])]
         example_id = sha256_hex(tpl["name"], src_key, payload)
 
