@@ -34,7 +34,7 @@ question_sets:
     summary_verify: 3
     summary_verify_fanout: 3
     train_instruction: 1
-    train_multihop: 1
+    train_multihop: 2
     train_negative: 1
     train_qa: 1
 
@@ -339,7 +339,7 @@ training:
   multihop: {min_hops: 2, max_hops: 3, max_expansions: 20000, relations: [depends_on, causes, procedure_for, example_of]}
   derive_from: [qa_single, instruction]
   answer_state_tokens: 1500
-  multihop_state_tokens: 800
+  multihop_state_tokens: 3000
   dedup: {ann_k: 5, min_similarity: 0.95}
   splits:
     by: document                    # document | component. The linked graph is mostly one component, which puts nearly every example in one split.

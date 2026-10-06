@@ -156,6 +156,19 @@ class TrainingStage(Stage):
             "SELECT edge_id, src_id, dst_id, rel, directed, decision_ids, weight FROM edges WHERE corpus_id = %s AND NOT structural "
             "AND status = 'accepted' AND src_kind = 'chunk' AND dst_kind = 'chunk' ORDER BY edge_id", (ctx.corpus_id,))
 
+    async def _hop_edges(self, ctx: Context, relations: list[str], min_similarity: float) -> list[dict[str, Any]]:
+        """Edges a multi-hop path may follow: only relations that carry a fact from one chunk into the next (a path
+        of `elaborates` or `same_subject` edges repeats itself, so no hop is ever needed), and never between a
+        chunk and its translation or near-copy, which would make either one redundant."""
+        return await ctx.db.fetch(
+            "SELECT e.edge_id, e.src_id, e.dst_id, e.rel, e.directed, e.decision_ids, e.weight FROM edges e "
+            "JOIN chunks a ON a.chunk_id = e.src_id JOIN documents da ON da.doc_id = a.doc_id "
+            "JOIN chunks b ON b.chunk_id = e.dst_id JOIN documents db ON db.doc_id = b.doc_id "
+            "WHERE e.corpus_id = %s AND NOT e.structural AND e.status = 'accepted' AND e.src_kind = 'chunk' AND e.dst_kind = 'chunk' "
+            "AND e.rel = ANY(%s) AND da.language IS NOT DISTINCT FROM db.language "
+            "AND (a.embedding IS NULL OR b.embedding IS NULL OR 1 - (a.embedding <=> b.embedding) < %s) ORDER BY e.edge_id",
+            (ctx.corpus_id, relations, min_similarity))
+
     def paths(self, edges: list[dict[str, Any]], min_hops: int, max_hops: int, limit: int, salt: str, max_expansions: int) -> list[list[dict[str, Any]]]:
         """Deterministic simple paths of `min_hops..max_hops` accepted edges."""
         adj: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -191,14 +204,12 @@ class TrainingStage(Stage):
         strat = pol["stratify_by"]
         if kind in ("qa_single", "instruction"):
             return stratified(await self._chunks(ctx), strat, quota, name)
-        edges = await self._edges(ctx)
         if kind == "qa_multihop":
             mh = pol["multihop"]
-            # Only relations that carry a fact from one chunk into the next: a path of `elaborates` or
-            # `same_subject` edges repeats itself, so no hop is ever needed.
-            hop_edges = [e for e in edges if e["rel"] in mh["relations"]]
-            paths = self.paths(hop_edges, mh["min_hops"], mh["max_hops"], quota, name, mh["max_expansions"])
+            paths = self.paths(await self._hop_edges(ctx, mh["relations"], pol["dedup"]["min_similarity"]),
+                               mh["min_hops"], mh["max_hops"], quota, name, mh["max_expansions"])
             return [{"source_key": sha256_hex([e["edge_id"] for e in p]), "path": p} for p in paths]
+        edges = await self._edges(ctx)
         if kind == "graph_reasoning":
             return stratified([dict(e, source_key=e["edge_id"]) for e in edges], ["rel"], quota, name)
         if kind == "triples":
