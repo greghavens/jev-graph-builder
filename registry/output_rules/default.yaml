@@ -12,10 +12,12 @@ rules:
   answer_no_source_reference:
     instructions: "`answer` states its information directly. It does not refer to the documentation, the passage, the chunk, the section, the text, the context or the source it was drawn from (for example \"according to the passage\", \"this chunk does not say\", \"the document says\" or \"as described above\"), and it does not use \"it\" or \"this\" for something it never names."
   prompt_no_source_reference:
-    instructions: "`prompt` names its subject and can be understood on its own. It does not refer to \"the passage\", \"the chunk\", \"the section\", \"the text\", \"this document\", \"the scenario\", \"the context\" or \"the source\"."
+    instructions: "`prompt` names its subject and can be understood on its own by someone who has not seen the source. It does not refer to \"the passage\", \"the chunk\", \"the section\", \"the text\", \"this document\", \"the scenario\", \"the context\" or \"the source\", and it does not say \"the\" for something only the source identifies, such as \"the table\", \"the figure\", \"the example\", \"the author\" or \"the affected release\"."
   prompt_no_leak:
     instructions: "`prompt` does not state or give away the information that `answer` provides."
   prompt_substantive:
-    instructions: "`prompt` asks about the subject matter itself (what something is, does, requires, or how to do it), something a practitioner would want to know. It does not ask about incidental details of the source such as its publication date, author, page layout or file name."
+    instructions: "`prompt` asks about the subject matter itself (what something is, does, requires, or how to do it), something a practitioner would want to know. It does not ask about incidental details of the source such as its publication date, author, page layout, file name, or the title or topic of a blog post, episode or video."
+  prompt_single_question:
+    instructions: "`prompt` asks one question. It is not several separate questions joined with \"and\" or commas, each of which could be asked and answered on its own."
   unanswerable_marked:
     instructions: "Either `answer` answers `prompt`, or it plainly says that `prompt` cannot be answered; it does not present a guess or an answer to a different question as the answer."

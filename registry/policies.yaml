@@ -49,7 +49,7 @@ prompts:
     extract: 2
     gen_graph_reasoning: 2
     gen_instruction: 2
-    gen_qa_multihop: 2
+    gen_qa_multihop: 3
     gen_qa_single: 2
     propose_relations: 1
     repair_output: 1
