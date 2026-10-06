@@ -53,6 +53,8 @@ async def _run_all(ctx) -> dict:
 
 
 async def test_full_pipeline(ctx, env, tmp_path: Path) -> None:
+    # Multi-hop paths only follow relations that carry a fact between chunks, never the default `elaborates`.
+    env.fake_jev.overrides.update({("link", "relation"): "depends_on", ("link_fanout", "relation"): "depends_on"})
     await _run_all(ctx)
     assert await _count(ctx, "documents") == 20
     assert await _count(ctx, "chunks", "WHERE status = 'accepted'") >= 20

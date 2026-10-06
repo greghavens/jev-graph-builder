@@ -336,7 +336,7 @@ audit:
 training:
   quotas: {qa_single: 2000, instruction: 1000, qa_multihop: 500, graph_reasoning: 500, triples: 100000, retrieval_pairs: 2000, rerank_soft_labels: 2000}
   stratify_by: [doc_type, role]
-  multihop: {min_hops: 2, max_hops: 3, max_expansions: 20000}
+  multihop: {min_hops: 2, max_hops: 3, max_expansions: 20000, relations: [depends_on, causes, procedure_for, example_of]}
   derive_from: [qa_single, instruction]
   answer_state_tokens: 1500
   multihop_state_tokens: 800

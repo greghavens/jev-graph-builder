@@ -194,7 +194,10 @@ class TrainingStage(Stage):
         edges = await self._edges(ctx)
         if kind == "qa_multihop":
             mh = pol["multihop"]
-            paths = self.paths(edges, mh["min_hops"], mh["max_hops"], quota, name, mh["max_expansions"])
+            # Only relations that carry a fact from one chunk into the next: a path of `elaborates` or
+            # `same_subject` edges repeats itself, so no hop is ever needed.
+            hop_edges = [e for e in edges if e["rel"] in mh["relations"]]
+            paths = self.paths(hop_edges, mh["min_hops"], mh["max_hops"], quota, name, mh["max_expansions"])
             return [{"source_key": sha256_hex([e["edge_id"] for e in p]), "path": p} for p in paths]
         if kind == "graph_reasoning":
             return stratified([dict(e, source_key=e["edge_id"]) for e in edges], ["rel"], quota, name)
