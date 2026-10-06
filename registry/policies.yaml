@@ -342,7 +342,7 @@ training:
   multihop_state_tokens: 800
   dedup: {ann_k: 5, min_similarity: 0.95}
   splits:
-    by: component                   # component | document
+    by: document                    # document | component. The linked graph is mostly one component, which puts nearly every example in one split.
     fractions: {train: 0.9, validation: 0.05, test: 0.05}
   retrieval: {negative_candidates: 20, max_negatives: 3}
   rerank: {candidates: 10}

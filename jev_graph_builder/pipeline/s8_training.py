@@ -57,6 +57,9 @@ RULES_KEY = "s8_output_rules"  # per example: the output-rule checks of each aut
 DEFAULT_FIELDS = {"prompt": "question", "answer": "answer"}
 QS_DEDUP = "dedup"
 ACCEPTED, REJECTED, IN_REVIEW, DUPLICATE = "accepted", "rejected", "review", "duplicate"
+# The split of an example whose sources fall in different splits (an edge or path across them): not exported,
+# since either split would hold text from the other.
+CROSS_SPLIT = "cross_split"
 
 
 def enabled_templates(ctx: Context, kinds: tuple[str, ...]) -> list[dict[str, Any]]:
@@ -608,8 +611,9 @@ class TrainingStage(Stage):
         rows = await ctx.db.fetch("SELECT example_id, source_chunk_ids FROM training_examples WHERE status = %s", (ACCEPTED,))
         async with ctx.db.tx() as conn:
             for r in rows:
-                groups = sorted({keys.get(c, c) for c in r["source_chunk_ids"] or []})
-                split = assign_split(groups[0] if groups else r["example_id"], pol["fractions"])
+                groups = {keys.get(c, c) for c in r["source_chunk_ids"] or []} or {r["example_id"]}
+                splits = {assign_split(g, pol["fractions"]) for g in groups}
+                split = splits.pop() if len(splits) == 1 else CROSS_SPLIT
                 await conn.execute("UPDATE training_examples SET split = %s WHERE example_id = %s", (split, r["example_id"]))
 
 
@@ -633,9 +637,9 @@ async def export(ctx: Context, out_dir: Path, fmt: str, templates: list[str] | N
     rows = await ctx.db.fetch(
         "SELECT t.example_id, t.template, t.split, t.payload, t.source_chunk_ids, t.source_edge_ids, t.decision_ids, "
         "t.registry_version, h.harness, h.model AS harness_model FROM training_examples t "
-        "LEFT JOIN harness_runs h ON h.harness_run_id = t.harness_run_id WHERE t.status = %s "
+        "LEFT JOIN harness_runs h ON h.harness_run_id = t.harness_run_id WHERE t.status = %s AND t.split IS DISTINCT FROM %s "
         "AND (%s::text[] IS NULL OR t.template = ANY(%s)) ORDER BY t.template, t.split, t.example_id",
-        (ACCEPTED, templates, templates))
+        (ACCEPTED, CROSS_SPLIT, templates, templates))
     records = [{**r, "jev_model": ctx.jev.provider.model} for r in rows]
     out_dir.mkdir(parents=True, exist_ok=True)
     written: dict[str, Any] = {}
