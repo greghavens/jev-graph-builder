@@ -161,15 +161,20 @@ class TrainingStage(Stage):
     async def _hop_edges(self, ctx: Context, relations: list[str], min_similarity: float) -> list[dict[str, Any]]:
         """Edges a multi-hop path may follow: only relations that carry a fact from one chunk into the next (a path
         of `elaborates` or `same_subject` edges repeats itself, so no hop is ever needed), and never between a
-        chunk and its translation or near-copy, which would make either one redundant."""
-        return await ctx.db.fetch(
-            "SELECT e.edge_id, e.src_id, e.dst_id, e.rel, e.directed, e.decision_ids, e.weight FROM edges e "
+        chunk and its translation or near-copy, which would make either one redundant. With document splits, both
+        ends are in one split, so a path never spans splits."""
+        rows = await ctx.db.fetch(
+            "SELECT e.edge_id, e.src_id, e.dst_id, e.rel, e.directed, e.decision_ids, e.weight, a.doc_id AS src_doc, b.doc_id AS dst_doc FROM edges e "
             "JOIN chunks a ON a.chunk_id = e.src_id JOIN documents da ON da.doc_id = a.doc_id "
             "JOIN chunks b ON b.chunk_id = e.dst_id JOIN documents db ON db.doc_id = b.doc_id "
             "WHERE e.corpus_id = %s AND NOT e.structural AND e.status = 'accepted' AND e.src_kind = 'chunk' AND e.dst_kind = 'chunk' "
             "AND e.rel = ANY(%s) AND da.language IS NOT DISTINCT FROM db.language "
             "AND (a.embedding IS NULL OR b.embedding IS NULL OR 1 - (a.embedding <=> b.embedding) < %s) ORDER BY e.edge_id",
             (ctx.corpus_id, relations, min_similarity))
+        pol = ctx.reg.policy("training.splits")
+        if pol["by"] == "document":
+            rows = [r for r in rows if assign_split(r["src_doc"], pol["fractions"]) == assign_split(r["dst_doc"], pol["fractions"])]
+        return rows
 
     def paths(self, edges: list[dict[str, Any]], min_hops: int, max_hops: int, limit: int, salt: str, max_expansions: int) -> list[list[dict[str, Any]]]:
         """Deterministic simple paths of `min_hops..max_hops` accepted edges."""
