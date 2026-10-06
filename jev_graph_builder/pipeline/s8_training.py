@@ -204,6 +204,23 @@ class TrainingStage(Stage):
                 stack.extend((e["dst_id"], [*path, e]) for e in reversed(adj[node]) if e["dst_id"] not in seen)
         return out
 
+    def split_paths(self, ctx: Context, edges: list[dict[str, Any]], mh: dict[str, Any], quota: int, salt: str) -> list[list[dict[str, Any]]]:
+        """With document splits every hop edge lies in one split, and the held-out splits have few paths of their
+        own; each split gets its fraction of the quota (what a smaller split cannot fill goes to the largest), so the
+        held-out splits are not crowded out by train paths."""
+        pol = ctx.reg.policy("training.splits")
+        if pol["by"] != "document":
+            return self.paths(edges, mh["min_hops"], mh["max_hops"], quota, salt, mh["max_expansions"])
+        by_split: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for e in edges:
+            by_split[assign_split(e["src_doc"], pol["fractions"])].append(e)
+        largest = max(pol["fractions"], key=pol["fractions"].get)
+        out: list[list[dict[str, Any]]] = []
+        for split in sorted(pol["fractions"], key=lambda n: (n == largest, n)):
+            limit = quota - len(out) if split == largest else round(quota * pol["fractions"][split])
+            out.extend(self.paths(by_split[split], mh["min_hops"], mh["max_hops"], limit, salt, mh["max_expansions"]))
+        return out
+
     async def sources(self, ctx: Context, tpl: dict[str, Any]) -> list[dict[str, Any]]:
         kind, name = tpl["kind"], tpl["name"]
         pol = ctx.reg.policy("training")
@@ -213,8 +230,8 @@ class TrainingStage(Stage):
             return stratified(await self._chunks(ctx), strat, quota, name)
         if kind == "qa_multihop":
             mh = pol["multihop"]
-            paths = self.paths(await self._hop_edges(ctx, mh["relations"], pol["dedup"]["min_similarity"]),
-                               mh["min_hops"], mh["max_hops"], quota, name, mh["max_expansions"])
+            paths = self.split_paths(ctx, await self._hop_edges(ctx, mh["relations"], pol["dedup"]["min_similarity"]),
+                                     mh, quota, name)
             return [{"source_key": sha256_hex([e["edge_id"] for e in p]), "path": p} for p in paths]
         edges = await self._edges(ctx)
         if kind == "graph_reasoning":

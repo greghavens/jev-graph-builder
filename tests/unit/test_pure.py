@@ -615,3 +615,19 @@ def test_training_limit_is_shared_across_templates():
     picked = [(i.payload["template"], i.payload["source"].get("triple")) for i in TrainingStage().limit(items, 9)]
     assert picked.count(("qa_single", None)) == picked.count(("triples", "edge")) == picked.count(("triples", "claim")) == 3
     assert len(TrainingStage().limit(items[:3], 10)) == 3
+
+
+def test_multihop_paths_give_each_split_its_share():
+    fractions = {"train": 0.9, "validation": 0.05, "test": 0.05}
+    reg = type("Reg", (), {"policy": lambda self, k: {"by": "document", "fractions": fractions}})()
+    ctx = type("Ctx", (), {"reg": reg})()
+    docs = [f"doc{i}" for i in range(400)]
+    # one two-hop chain per document; the held-out splits hold few documents, so few paths
+    edges = [{"edge_id": f"{d}:{h}", "src_id": f"{d}/{h}", "dst_id": f"{d}/{h + 1}", "directed": True, "src_doc": d}
+             for d in docs for h in range(2)]
+    held_out = sum(assign_split(d, fractions) != "train" for d in docs)
+    mh = {"min_hops": 2, "max_hops": 2, "max_expansions": 50}
+    paths = TrainingStage().split_paths(ctx, edges, mh, 100, "s")
+    splits = [assign_split(p[0]["src_doc"], fractions) for p in paths]
+    assert len(paths) == 100
+    assert splits.count("validation") == splits.count("test") == 5, (splits.count("validation"), splits.count("test"), held_out)
