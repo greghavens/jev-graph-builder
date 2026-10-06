@@ -16,7 +16,7 @@ rules:
   prompt_no_leak:
     instructions: "`prompt` does not state or give away the information that `answer` provides."
   prompt_substantive:
-    instructions: "`prompt` asks about the subject matter itself (what something is, does, requires, or how to do it), something a practitioner would want to know. It does not ask about incidental details of the source such as its publication date, author, page layout, file name, or the title or topic of a blog post, episode or video."
+    instructions: "`prompt` asks about the subject matter itself (what something is, does, requires, or how to do it), something a practitioner would want to know. It does not ask about incidental details of the source such as its publication date, author, page layout, file name, the title or topic of a blog post, episode or video, what the source lists under a heading (such as the \"Environment\" or \"Products\" section of a support article), or a marketing figure it highlights."
   prompt_single_question:
     instructions: "`prompt` asks one question. It is not several separate questions joined with \"and\" or commas, each of which could be asked and answered on its own."
   unanswerable_marked:
