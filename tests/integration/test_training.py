@@ -98,3 +98,26 @@ async def test_a_sampled_run_derives_from_every_accepted_example(ctx) -> None:
     templates = [t for t in ctx.reg.corpus.get("training_templates") or [] if ctx.reg.training_template(t)["kind"] == "retrieval_pairs"]
     assert templates
     assert rep.selected == sources[0]["n"] * len(templates), (rep.selected, sources[0]["n"], templates)
+
+
+async def test_an_example_whose_source_is_no_longer_selected_is_superseded(ctx) -> None:
+    from jev_graph_builder.pipeline.s8_training import TrainingStage
+
+    await _run_all(ctx)
+    async with ctx.db.tx() as conn:
+        await conn.execute("INSERT INTO training_examples (example_id, template, payload, status, registry_version) "
+                           "SELECT 'gone', template, jsonb_set(payload, '{source_key}', '\"gone\"'), status, registry_version "
+                           "FROM training_examples WHERE template = 'qa_single' AND status = 'accepted' LIMIT 1")
+    rep = await run_stage(ctx, TrainingStage(), RunOptions())
+    assert not rep.errors, rep.errors[:3]
+    rows = await ctx.db.fetch("SELECT example_id, status FROM training_examples WHERE example_id = 'gone' "
+                              "OR (template = 'qa_single' AND status = 'accepted')")
+    assert {r["example_id"]: r["status"] for r in rows}.get("gone") == "superseded", rows
+    assert len(rows) > 1, rows  # still-selected examples are kept
+
+
+async def test_retrieval_negatives_come_from_the_positives_split(ctx) -> None:
+    await _run_all(ctx)
+    rows = await ctx.db.fetch("SELECT split, source_chunk_ids FROM training_examples WHERE template = 'retrieval_pairs' AND status = 'accepted'")
+    assert rows
+    assert all(r["split"] != "cross_split" for r in rows), [r["split"] for r in rows]

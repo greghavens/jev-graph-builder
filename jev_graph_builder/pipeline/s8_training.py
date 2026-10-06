@@ -52,7 +52,9 @@ CACHE_KEY = "s8_records"
 TRIPLE_TEXT_KEY = "s8_triple_chunks"
 # Payload formats of code-exported templates: a new format redoes their items. Both carry the text of every
 # chunk they name, so an export reads without the database.
-PAYLOAD_FORMATS = {"triples": "with-chunk-text-and-definitions", "retrieval_pairs": "with-distinct-passage-text"}
+PAYLOAD_FORMATS = {"triples": "with-chunk-text-and-definitions", "retrieval_pairs": "with-distinct-same-split-passages"}
+SPLIT_DOCS_KEY = "s8_split_docs"  # with document splits: split name → its doc IDs
+SOURCES_KEY = "s8_current_sources"  # per template: the source keys the registry selects now
 RULES_KEY = "s8_output_rules"  # per example: the output-rule checks of each authoring round (§1.4)
 DEFAULT_FIELDS = {"prompt": "question", "answer": "answer"}
 QS_DEDUP = "dedup"
@@ -239,8 +241,11 @@ class TrainingStage(Stage):
 
     async def enumerate(self, ctx: Context) -> list[WorkItem]:
         items = []
+        current = ctx.cache.setdefault(SOURCES_KEY, {})
         for tpl in enabled_templates(ctx, self.kinds):
-            for src in await self.sources(ctx, tpl):
+            srcs = await self.sources(ctx, tpl)
+            current[tpl["name"]] = {s["source_key"] for s in srcs}
+            for src in srcs:
                 payload = {"template": tpl["name"], "kind": tpl["kind"], "source": src}
                 fmt = (PAYLOAD_FORMATS[tpl["kind"]],) if tpl["kind"] in PAYLOAD_FORMATS else ()
                 items.append(self.item(ctx, f"{tpl['name']}:{src['source_key']}", tpl, src, *fmt, payload=payload))
@@ -503,20 +508,38 @@ class TrainingStage(Stage):
 
         return write
 
-    async def _neighbours(self, ctx: Context, query: str, exclude: list[str], k: int) -> list[dict[str, Any]]:
+    async def _neighbours(self, ctx: Context, query: str, exclude: list[str], k: int,
+                          docs: list[str] | None = None) -> list[dict[str, Any]]:
         vec = np.asarray((await ctx.embedder.embed([query]))[0], dtype=np.float32)
+        in_docs = "" if docs is None else "AND doc_id = ANY(%(d)s) "
         knn_policy = ctx.reg.policy("store.candidate_knn")
         order = knn.order_by(knn_policy, "ORDER BY embedding <=> %(v)s::vector")
         return await knn.fetch(ctx.db, knn_policy,
             "SELECT chunk_id, text FROM (SELECT chunk_id, text, embedding <=> %(v)s::vector AS dist FROM chunks "
             "WHERE corpus_id = %(c)s AND status = 'accepted' AND embedding IS NOT NULL AND NOT (chunk_id = ANY(%(x)s)) "
-            f"{order} LIMIT %(fetch)s) s ORDER BY dist, chunk_id LIMIT %(k)s",
-            {"c": ctx.corpus_id, "x": exclude, "v": vec, "k": k, "fetch": k * ctx.reg.policy("store.ann_overfetch")})
+            f"{in_docs}{order} LIMIT %(fetch)s) s ORDER BY dist, chunk_id LIMIT %(k)s",
+            {"c": ctx.corpus_id, "x": exclude, "v": vec, "k": k, "d": docs, "fetch": k * ctx.reg.policy("store.ann_overfetch")})
+
+    async def _same_split_docs(self, ctx: Context, chunk_ids: list[str]) -> list[str] | None:
+        """With document splits, the documents in the split of `chunk_ids`, so an example built from
+        them and its neighbours stays in one split; None (no restriction) otherwise."""
+        pol = ctx.reg.policy("training.splits")
+        if pol["by"] != "document":
+            return None
+        if SPLIT_DOCS_KEY not in ctx.cache:
+            by_split: dict[str, list[str]] = defaultdict(list)
+            for r in await ctx.db.fetch("SELECT DISTINCT doc_id FROM chunks WHERE corpus_id = %s ORDER BY doc_id", (ctx.corpus_id,)):
+                by_split[assign_split(r["doc_id"], pol["fractions"])].append(r["doc_id"])
+            ctx.cache[SPLIT_DOCS_KEY] = dict(by_split)
+        docs = await ctx.db.fetch("SELECT DISTINCT doc_id FROM chunks WHERE chunk_id = ANY(%s)", (chunk_ids,))
+        splits = {assign_split(r["doc_id"], pol["fractions"]) for r in docs}
+        return ctx.cache[SPLIT_DOCS_KEY].get(splits.pop(), []) if len(splits) == 1 else None
 
     async def _retrieval_pair(self, ctx: Context, tpl: dict[str, Any], src: dict[str, Any], item: WorkItem) -> Writer:
         query = src["payload"]["prompt"]
         positives = list(src["source_chunk_ids"])
-        cands = await self._neighbours(ctx, query, positives, ctx.reg.policy("training.retrieval.negative_candidates"))
+        cands = await self._neighbours(ctx, query, positives, ctx.reg.policy("training.retrieval.negative_candidates"),
+                                       await self._same_split_docs(ctx, positives))
         texts = await self._texts(ctx, positives)
         # The same passage recurs across doc versions under other chunk IDs: one copy, and none of a positive.
         seen = {" ".join(t.split()) for t in texts.values()}
@@ -564,9 +587,18 @@ class TrainingStage(Stage):
     # ------------------------------------------------------------- finalize
 
     async def finalize(self, ctx: Context, report: RunReport, opts: RunOptions) -> None:
+        await self.retire_unselected(ctx)
         await self.link_upstream(ctx)
         await self.dedup(ctx)
         await self.assign_splits(ctx)
+
+    async def retire_unselected(self, ctx: Context) -> None:
+        """Examples whose source the registry no longer selects (e.g. a path the multi-hop
+        relations now exclude) are superseded, so they do not linger in the export."""
+        async with ctx.db.tx() as conn:
+            for name, keys in sorted(ctx.cache.get(SOURCES_KEY, {}).items()):
+                await conn.execute("UPDATE training_examples SET status = 'superseded' WHERE template = %s "
+                                   "AND status <> 'superseded' AND NOT (payload->>'source_key' = ANY(%s))", (name, sorted(keys)))
 
     async def link_upstream(self, ctx: Context) -> None:
         """Derived examples inherit the decisions that admitted their source example (R-090)."""
@@ -637,6 +669,7 @@ class DerivedTrainingStage(TrainingStage):
     sampled = False  # its sources are the accepted examples the (sampled) training stage produced
 
     async def finalize(self, ctx: Context, report: RunReport, opts: RunOptions) -> None:
+        await self.retire_unselected(ctx)
         await self.link_upstream(ctx)
         await self.assign_splits(ctx)
 
