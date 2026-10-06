@@ -63,3 +63,33 @@ async def test_an_example_the_harness_never_fixes_is_rejected(ctx, env) -> None:
     for e in examples:
         if e["rule_checks"]:  # an example rejected by an earlier filter never reached the rule check
             assert e["status"] == "rejected" and e["rule_checks"] == ["reject"] * (rounds + 1), (e["status"], e["rule_checks"])
+
+
+async def test_triples_carry_the_text_they_relate(ctx) -> None:
+    await _run_all(ctx)
+    rows = await ctx.db.fetch("SELECT payload FROM training_examples WHERE template = 'triples' AND status = 'accepted'")
+    assert rows
+    for r in rows:
+        p = r["payload"]
+        ends = [p["subject"], p["object"]] if "predicate" in p else [p["source"]]
+        assert all(e["text"] for e in ends), p
+        if "predicate" in p:
+            assert p["predicate_definition"], p
+
+
+async def test_a_sampled_run_derives_from_every_accepted_example(ctx) -> None:
+    from jev_graph_builder.pipeline.s8_training import DerivedTrainingStage
+
+    stages = all_stages()
+    for stage in stages:
+        if stage.name != "training_derived":
+            rep = await run_stage(ctx, stage, RunOptions())
+            assert not rep.errors, (stage.name, rep.errors[:3])
+    sources = await ctx.db.fetch("SELECT count(*) AS n FROM training_examples WHERE template = ANY(%s) AND status = 'accepted'",
+                                 (ctx.reg.policy("training.derive_from"),))
+    assert sources[0]["n"]
+    # `--sample` picks among generated sources; derived examples are built from whatever that produced
+    rep = await run_stage(ctx, DerivedTrainingStage(), RunOptions(sample=1e-9, dry_run=True))
+    templates = [t for t in ctx.reg.corpus.get("training_templates") or [] if ctx.reg.training_template(t)["kind"] == "retrieval_pairs"]
+    assert templates
+    assert rep.selected == sources[0]["n"] * len(templates), (rep.selected, sources[0]["n"], templates)

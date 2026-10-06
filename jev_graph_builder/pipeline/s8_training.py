@@ -49,6 +49,8 @@ GENERATED = ("qa_single", "instruction", "qa_multihop", "graph_reasoning", "trip
 DERIVED = ("retrieval_pairs", "rerank_soft_labels")
 QA_KINDS = ("qa_single", "qa_multihop")
 CACHE_KEY = "s8_records"
+TRIPLE_TEXT_KEY = "s8_triple_chunks"
+TRIPLES_FORMAT = "with-chunk-text"  # triples carry their chunks' title and text, so an export reads without the database
 RULES_KEY = "s8_output_rules"  # per example: the output-rule checks of each authoring round (§1.4)
 DEFAULT_FIELDS = {"prompt": "question", "answer": "answer"}
 QS_DEDUP = "dedup"
@@ -191,12 +193,24 @@ class TrainingStage(Stage):
             return [dict(r, source_key=r["example_id"]) for r in rows][:quota]
         raise ValueError(f"unknown training template kind `{kind}`")
 
+    def limit(self, selected: list[WorkItem], n: int) -> list[WorkItem]:
+        """`--limit` is shared round-robin across templates, so a sample covers every template."""
+        by_tpl: dict[str, list[WorkItem]] = defaultdict(list)
+        for i in selected:
+            by_tpl[i.payload["template"]].append(i)
+        queues = [by_tpl[t] for t in sorted(by_tpl)]
+        out: list[WorkItem] = []
+        for rank in range(max(map(len, queues), default=0)):
+            out.extend(q[rank] for q in queues if rank < len(q))
+        return out[:n]
+
     async def enumerate(self, ctx: Context) -> list[WorkItem]:
         items = []
         for tpl in enabled_templates(ctx, self.kinds):
             for src in await self.sources(ctx, tpl):
                 payload = {"template": tpl["name"], "kind": tpl["kind"], "source": src}
-                items.append(self.item(ctx, f"{tpl['name']}:{src['source_key']}", tpl, src, payload=payload))
+                fmt = (TRIPLES_FORMAT,) if tpl["kind"] == "triples" else ()
+                items.append(self.item(ctx, f"{tpl['name']}:{src['source_key']}", tpl, src, *fmt, payload=payload))
         return items
 
     # ------------------------------------------------------------- harness
@@ -219,6 +233,11 @@ class TrainingStage(Stage):
         return {r["chunk_id"]: r["text"] for r in await ctx.db.fetch("SELECT chunk_id, text FROM chunks WHERE chunk_id = ANY(%s)", (ids,))}
 
     async def prepare(self, ctx: Context, items: list[WorkItem], enumerated: list[WorkItem]) -> None:
+        triples = [i.payload["source"] for i in items if i.payload["kind"] == "triples"]
+        if triples:
+            ids = sorted({c for t in triples for c in ((t["src_id"], t["dst_id"]) if t["triple"] == "edge" else (t["chunk_id"],))})
+            ctx.cache[TRIPLE_TEXT_KEY] = {r["chunk_id"]: {"chunk_id": r["chunk_id"], "title": r["title"] or "", "text": r["text"]}
+                                          for r in await ctx.db.fetch("SELECT chunk_id, title, text FROM chunks WHERE chunk_id = ANY(%s)", (ids,))}
         cache: dict[str, tuple[dict[str, Any] | None, str, str, str | None]] = ctx.cache.setdefault(CACHE_KEY, {})
         by_tpl: dict[str, list[WorkItem]] = defaultdict(list)
         for i in enumerated:
@@ -428,12 +447,18 @@ class TrainingStage(Stage):
         return self._writer(ctx, tpl, src["source_key"], payload, status, [src["src_id"], src["dst_id"]], [src["edge_id"]], cite.decisions, run_id)
 
     async def _triple(self, ctx: Context, tpl: dict[str, Any], src: dict[str, Any], item: WorkItem) -> Writer:
+        chunks = ctx.cache.get(TRIPLE_TEXT_KEY, {})
+
+        def chunk(cid: str) -> dict[str, str]:
+            return chunks.get(cid) or {"chunk_id": cid, "title": "", "text": ""}
+
         if src["triple"] == "edge":
-            payload = {"subject": src["src_id"], "predicate": src["rel"], "object": src["dst_id"], "directed": src["directed"],
-                       "weight": src["weight"], "admitted_by": src["decision_ids"]}
+            payload = {"subject": chunk(src["src_id"]), "predicate": src["rel"],
+                       "predicate_definition": relation_definitions(ctx).get(src["rel"], {}).get("definition", ""),
+                       "object": chunk(src["dst_id"]), "directed": src["directed"], "weight": src["weight"], "admitted_by": src["decision_ids"]}
             chunk_ids, edge_ids = [src["src_id"], src["dst_id"]], [src["edge_id"]]
         else:
-            payload = {"claim": src["text"], "claim_type": src["claim_type"], "chunk_id": src["chunk_id"], "admitted_by": src["decision_ids"]}
+            payload = {"claim": src["text"], "claim_type": src["claim_type"], "source": chunk(src["chunk_id"]), "admitted_by": src["decision_ids"]}
             chunk_ids, edge_ids = [src["chunk_id"]], []
         w = self._writer(ctx, tpl, src["source_key"], payload, ACCEPTED, chunk_ids, edge_ids, [])
         ids = list(src["decision_ids"] or [])
@@ -565,6 +590,7 @@ class TrainingStage(Stage):
 class DerivedTrainingStage(TrainingStage):
     name = "training_derived"
     kinds = DERIVED
+    sampled = False  # its sources are the accepted examples the (sampled) training stage produced
 
     async def finalize(self, ctx: Context, report: RunReport, opts: RunOptions) -> None:
         await self.link_upstream(ctx)

@@ -212,6 +212,12 @@ async def enqueue_review(
 class Stage:
     name: str = ""
     deps: Deps = Deps()
+    # False when the stage's items come from an earlier stage's (already sampled) output.
+    sampled: bool = True
+
+    def limit(self, selected: list[WorkItem], n: int) -> list[WorkItem]:
+        """The first `n` selected items; stages with several kinds of item override this to share `n` out."""
+        return selected[:n]
 
     async def enumerate(self, ctx: Context) -> list[WorkItem]:
         raise NotImplementedError
@@ -272,11 +278,11 @@ async def select_items(ctx: Context, stage: Stage, opts: RunOptions) -> tuple[li
         by_status[status] = by_status.get(status, 0) + 1
         if status not in RUNNABLE or (opts.resume_only and status in NEW):
             continue
-        if opts.sample is not None and unit_fraction(stage.name, item.item_id) >= opts.sample:
+        if opts.sample is not None and stage.sampled and unit_fraction(stage.name, item.item_id) >= opts.sample:
             continue
         selected.append(item)
     if opts.limit is not None:
-        selected = selected[: opts.limit]
+        selected = stage.limit(selected, opts.limit)
     return selected, by_status, items
 
 

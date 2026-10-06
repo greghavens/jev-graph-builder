@@ -23,7 +23,8 @@ from jev_graph_builder.parse.parsers import ParsedUnit
 from jev_graph_builder.pipeline.s1_ingest import fit_text, split_long_units
 from jev_graph_builder.pipeline.s2_segment import SegmentStage, max_chunk_tokens, named_values, structural_role
 from jev_graph_builder.pipeline.s5_entities import identical_pairs, name_key_pairs
-from jev_graph_builder.pipeline.s8_training import assign_split
+from jev_graph_builder.pipeline.common import WorkItem
+from jev_graph_builder.pipeline.s8_training import TrainingStage, assign_split
 from jev_graph_builder.query.search import composite, rrf_fuse
 
 FOLDS = {"’": "'"}
@@ -604,3 +605,10 @@ def test_install_triggerfish_needs_a_level_and_keeps_a_backup(tmp_path: Path, mo
     data = yaml.safe_load(text)
     assert data["models"] == {"primary": "x"} and data["mcp"]["servers"]["vcf-docs"]["classification"] == "PUBLIC"
     assert (tmp_path / "triggerfish.yaml.bak").is_file()
+
+
+def test_training_limit_is_shared_across_templates():
+    items = [WorkItem("training", f"{t}:{n}", "h", {"template": t}) for t in ("triples", "qa_single") for n in range(50)]
+    picked = TrainingStage().limit(items, 10)
+    assert [i.payload["template"] for i in picked].count("qa_single") == 5
+    assert len(TrainingStage().limit(items[:3], 10)) == 3
