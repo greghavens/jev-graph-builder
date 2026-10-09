@@ -1,0 +1,6 @@
+name: facts
+description: "Every accepted claim as a plain fact with its source chunk, for continued pretraining; already verified upstream, so no harness step."
+kind: triples
+include: [claims]
+prompt: null
+question_sets: {}

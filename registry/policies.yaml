@@ -36,6 +36,7 @@ question_sets:
     train_instruction: 1
     train_multihop: 2
     train_negative: 1
+    train_premise: 1
     train_qa: 1
 
 prompts:
@@ -50,7 +51,7 @@ prompts:
     gen_graph_reasoning: 2
     gen_instruction: 2
     gen_qa_multihop: 3
-    gen_qa_single: 2
+    gen_qa_single: 3
     propose_relations: 1
     repair_output: 1
 
@@ -316,7 +317,7 @@ audit:
     level: 0
     max_members_in_prompt: 30
     max_failed_fraction: 0.2
-  verification_question_sets: [extract_verify, extract_verify_fanout, summary_verify, summary_verify_fanout, link_verify, citation_check, train_qa, train_instruction, train_multihop, output_rules]
+  verification_question_sets: [extract_verify, extract_verify_fanout, summary_verify, summary_verify_fanout, link_verify, citation_check, train_qa, train_instruction, train_multihop, train_premise, output_rules]
   edge_requirements:
     chunk: [[link, link_fanout], [link_verify]]
   # §3 P3: harness output that is accepted must carry an accepting verification decision.
@@ -330,17 +331,21 @@ audit:
     - {name: community_summaries_verified, table: communities, id: community_id, decisions_column: decision_ids, when: "t.summary IS NOT NULL AND t.summary <> ''",
        question_sets: [citation_check], subject_kind: community, corpus_filter: "t.corpus_id = %(corpus)s"}
     - {name: training_examples_verified, table: training_examples, id: example_id, decisions_column: decision_ids, when: "t.harness_run_id IS NOT NULL",
-       question_sets: [train_qa, train_instruction, train_multihop, citation_check, output_rules], subject_kind: training_example,
+       question_sets: [train_qa, train_instruction, train_multihop, train_premise, citation_check, output_rules], subject_kind: training_example,
        corpus_filter: "true"}
 
 training:
-  quotas: {qa_single: 2000, instruction: 1000, qa_multihop: 500, graph_reasoning: 500, triples: 100000, retrieval_pairs: 2000, rerank_soft_labels: 2000}
+  # null: every content chunk (training.coverage) instead of a stratified sample
+  quotas: {qa_single: null, instruction: 1000, qa_multihop: 500, graph_reasoning: 500, triples: 100000, facts: null, retrieval_pairs: 2000, rerank_soft_labels: 2000}
   stratify_by: [doc_type, role]
+  # Q&A that teaches the corpus: one question per verified claim, at most `facts_per_chunk` per chunk (chosen
+  # by hash), and one question for a chunk with no claims if it has at least `min_chunk_tokens` tokens.
+  coverage: {facts_per_chunk: 4, min_chunk_tokens: 40}
   multihop: {min_hops: 2, max_hops: 3, max_expansions: 20000, relations: [depends_on, causes, procedure_for, example_of]}
   derive_from: [qa_single, instruction]
   answer_state_tokens: 1500
   multihop_state_tokens: 3000
-  dedup: {ann_k: 5, min_similarity: 0.95}
+  dedup: {ann_k: 5, min_similarity: 0.95, block_rows: 1024}   # block_rows: questions compared per matrix block
   splits:
     by: document                    # document | component. The linked graph is mostly one component, which puts nearly every example in one split.
     fractions: {train: 0.9, validation: 0.05, test: 0.05}

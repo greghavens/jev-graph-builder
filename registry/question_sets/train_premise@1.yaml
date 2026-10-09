@@ -1,0 +1,13 @@
+name: train_premise
+version: 1
+jev_model: jev-1.13.0
+purpose: "S8: a generated question must not bring in facts about the documented system that its source does not state, whether from the model's own knowledge or invented. The answer is checked separately by the filter set and the citation check."
+state_template:
+  prompt: {untrusted: true}
+  passages: {max_tokens_ref: policies.training.multihop_state_tokens, untrusted: true}
+questions:
+  premise_supported:
+    type: noul
+    instructions: "Everything `prompt` states or takes for granted about the documented products (that a feature, setting, component, version, requirement or behavior exists or works a certain way) is stated in `passages`. A question that only asks, without asserting anything, counts as supported."
+gating:
+  accept_when: {q: premise_supported, is: 'yes'}

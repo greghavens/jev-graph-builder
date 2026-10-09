@@ -3,13 +3,14 @@
 Templates are Registry data (`training/templates/*.yaml`); `corpus.yaml` lists
 the enabled ones. Code dispatches on the template `kind`:
 
-  qa_single, instruction   one chunk → harness example → Jev filter set + citation check
+  qa_single, instruction   one chunk (and, under coverage, one of its verified claims) → harness
+                           example → Jev filter set + question-premise check + citation check
   qa_multihop              a sampled path of accepted edges → harness → per-chunk
                            necessity Noul ("answerable without chunk_i" must be false)
-                           + per-hop citation checks
+                           + question-premise check + per-hop citation checks
   graph_reasoning          an accepted edge + endpoints → harness → citation check
                            against the edge evidence
-  triples                  accepted edges and claims, exported by code (already verified)
+  triples                  accepted edges and/or claims (`include`), exported by code (already verified)
   retrieval_pairs          accepted qa_* questions + positive chunk + hard negatives
                            (ANN neighbours Jev judges do not answer the query)
   rerank_soft_labels       accepted qa_* questions × ANN candidates → Jev relevance
@@ -58,6 +59,7 @@ SOURCES_KEY = "s8_current_sources"  # per template: the source keys the registry
 RULES_KEY = "s8_output_rules"  # per example: the output-rule checks of each authoring round (§1.4)
 DEFAULT_FIELDS = {"prompt": "question", "answer": "answer"}
 QS_DEDUP = "dedup"
+QS_PREMISE = "train_premise"  # the question states or assumes nothing about the system its source does not say
 ACCEPTED, REJECTED, IN_REVIEW, DUPLICATE = "accepted", "rejected", "review", "duplicate"
 # The split of an example whose sources fall in different splits (an edge or path across them): not exported,
 # since either split would hold text from the other.
@@ -141,7 +143,7 @@ class TrainingStage(Stage):
     @property
     def deps(self) -> Deps:  # type: ignore[override]
         return Deps(question_sets=("train_qa", "train_instruction", "train_multihop", "train_negative", "rag_passage",
-                                   "citation_check", QS_DEDUP, OUTPUT_RULES_QS),
+                                   "citation_check", QS_DEDUP, QS_PREMISE, OUTPUT_RULES_QS),
                     prompts=("gen_qa_single", "gen_instruction", "gen_qa_multihop", "gen_graph_reasoning"),
                     policies=("training",), corpus=True, embedding=True)
 
@@ -149,9 +151,31 @@ class TrainingStage(Stage):
 
     async def _chunks(self, ctx: Context) -> list[dict[str, Any]]:
         return [dict(r, source_key=r["chunk_id"]) for r in await ctx.db.fetch(
-            "SELECT c.chunk_id, c.doc_id, c.text, c.title, c.topic, d.doc_type FROM chunks c JOIN documents d ON d.doc_id = c.doc_id "
+            "SELECT c.chunk_id, c.doc_id, c.text, c.title, c.topic, c.tokens, d.doc_type FROM chunks c JOIN documents d ON d.doc_id = c.doc_id "
             "WHERE c.corpus_id = %s AND c.status = 'accepted' AND NOT coalesce(c.boilerplate, false) ORDER BY c.chunk_id",
             (ctx.corpus_id,))]
+
+    async def _claims(self, ctx: Context) -> list[dict[str, Any]]:
+        return await ctx.db.fetch(
+            "SELECT cl.claim_id, cl.chunk_id, cl.text, cl.claim_type, cl.decision_ids FROM claims cl JOIN chunks c ON c.chunk_id = cl.chunk_id "
+            "WHERE c.corpus_id = %s AND cl.status = 'accepted' ORDER BY cl.claim_id", (ctx.corpus_id,))
+
+    async def coverage(self, ctx: Context, salt: str) -> list[dict[str, Any]]:
+        """Q&A that teaches the whole corpus: every content chunk gets one source per verified claim, at most
+        `facts_per_chunk` of them (chosen by hash), so each question targets a fact Jev already confirmed in the
+        chunk; a chunk with no claims gets one source of its own if it is at least `min_chunk_tokens` long."""
+        cov = ctx.reg.policy("training.coverage")
+        facts: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for c in await self._claims(ctx):
+            facts[c["chunk_id"]].append(c)
+        out: list[dict[str, Any]] = []
+        for ch in await self._chunks(ctx):
+            mine = sorted(facts.get(ch["chunk_id"], []), key=lambda c: unit_fraction(salt, c["claim_id"]))[: cov["facts_per_chunk"]]
+            if mine:
+                out.extend({**ch, "source_key": sha256_hex(ch["chunk_id"], c["claim_id"]), "fact": c["text"]} for c in mine)
+            elif (ch["tokens"] or 0) >= cov["min_chunk_tokens"]:
+                out.append(ch)
+        return out
 
     async def _edges(self, ctx: Context) -> list[dict[str, Any]]:
         return await ctx.db.fetch(
@@ -227,19 +251,20 @@ class TrainingStage(Stage):
         quota = pol["quotas"][name]
         strat = pol["stratify_by"]
         if kind in ("qa_single", "instruction"):
+            if quota is None:
+                return await self.coverage(ctx, name)
             return stratified(await self._chunks(ctx), strat, quota, name)
         if kind == "qa_multihop":
             mh = pol["multihop"]
             paths = self.split_paths(ctx, await self._hop_edges(ctx, mh["relations"], pol["dedup"]["min_similarity"]),
                                      mh, quota, name)
             return [{"source_key": sha256_hex([e["edge_id"] for e in p]), "path": p} for p in paths]
-        edges = await self._edges(ctx)
         if kind == "graph_reasoning":
-            return stratified([dict(e, source_key=e["edge_id"]) for e in edges], ["rel"], quota, name)
+            return stratified([dict(e, source_key=e["edge_id"]) for e in await self._edges(ctx)], ["rel"], quota, name)
         if kind == "triples":
-            claims = await ctx.db.fetch(
-                "SELECT cl.claim_id, cl.chunk_id, cl.text, cl.claim_type, cl.decision_ids FROM claims cl JOIN chunks c ON c.chunk_id = cl.chunk_id "
-                "WHERE c.corpus_id = %s AND cl.status = 'accepted' ORDER BY cl.claim_id", (ctx.corpus_id,))
+            include = tpl.get("include") or ["edges", "claims"]
+            edges = await self._edges(ctx) if "edges" in include else []
+            claims = await self._claims(ctx) if "claims" in include else []
             return [*(dict(e, source_key=e["edge_id"], triple="edge") for e in edges),
                     *(dict(c, source_key=c["claim_id"], triple="claim") for c in claims)]
         if kind in DERIVED:
@@ -277,7 +302,7 @@ class TrainingStage(Stage):
 
     def record(self, ctx: Context, kind: str, src: dict[str, Any]) -> dict[str, Any]:
         if kind in ("qa_single", "instruction"):
-            return {"id": src["source_key"], "text": src["text"], "title": src.get("title") or ""}
+            return {"id": src["source_key"], "text": src["text"], "title": src.get("title") or "", "fact": src.get("fact")}
         if kind == "qa_multihop":
             return {"id": src["source_key"], "passages": [{"id": cid, "text": ""} for cid in self._path_chunks(src)]}
         rels = relation_definitions(ctx)
@@ -461,10 +486,18 @@ class TrainingStage(Stage):
             return self._writer(ctx, tpl, src["source_key"], payload, REJECTED, [src["chunk_id"]], [], [], run_id)
         r = await ctx.jev.ask(tpl["question_sets"]["filter"], {"prompt": rec[prompt_field], "answer": rec[answer_field], "chunk": chunk},
                               "training_example", sha256_hex(tpl["name"], src["source_key"], payload))
+        premise = await self.premise(ctx, tpl, src, payload, rec[prompt_field], [chunk])
         cite = await check_sentences(ctx.jev, [{"text": rec[answer_field], "citation_ids": ["evidence"]}],
                                      {"evidence": chunk[g.start: g.end]}, 1, tpl["name"])
-        status = self._combine([r.single.outcome, *(d.outcome for d in cite.decisions)] if cite.decisions else [REJECT])
-        return self._writer(ctx, tpl, src["source_key"], payload, status, [src["chunk_id"]], [], [r, *cite.decisions], run_id)
+        status = self._combine([r.single.outcome, premise.single.outcome, *(d.outcome for d in cite.decisions)] if cite.decisions else [REJECT])
+        return self._writer(ctx, tpl, src["source_key"], payload, status, [src["chunk_id"]], [], [r, premise, *cite.decisions], run_id)
+
+    async def premise(self, ctx: Context, tpl: dict[str, Any], src: dict[str, Any], payload: dict[str, Any], prompt: str,
+                      passages: list[str]) -> AskResult:
+        """The question itself may not bring in facts its source does not state (the answer is checked by the
+        filter set and the citation check)."""
+        return await ctx.jev.ask(QS_PREMISE, {"prompt": prompt, "passages": passages}, "training_example",
+                                 sha256_hex(tpl["name"], src["source_key"], payload, QS_PREMISE))
 
     async def _multihop(self, ctx: Context, tpl: dict[str, Any], src: dict[str, Any], item: WorkItem) -> Writer:
         rec, profile, reason, run_id = self._generated(ctx, tpl, src)
@@ -484,6 +517,9 @@ class TrainingStage(Stage):
             d = r.single
             outcomes.append({ACCEPT: REJECT, REJECT: ACCEPT}.get(d.outcome, d.outcome))  # inverted: "answerable" accepted = bad
         passages = {c: texts.get(c, "") for c in chunk_ids}
+        premise = await self.premise(ctx, tpl, src, payload, rec["question"], list(passages.values()))
+        results.append(premise)
+        outcomes.append(premise.single.outcome)
         sentences = [{"text": h["span"], "citation_ids": [h["chunk_id"]]} for h in rec["hop_evidence"]]
         cite = await check_sentences(ctx.jev, [{"text": rec["answer"], "citation_ids": chunk_ids}, *sentences], passages,
                                      ctx.reg.policy("run.concurrency.citation_check"), subject)
@@ -641,24 +677,28 @@ class TrainingStage(Stage):
             item = self.item(ctx, f"dedup:{name}", [(r["example_id"], r["prompt"]) for r in group])
 
             async def factory(group=group) -> Writer:
-                vecs = np.asarray(await ctx.embedder.embed([r["prompt"] for r in group]), dtype=float)
+                vecs = np.asarray(await ctx.embedder.embed([r["prompt"] for r in group]), dtype=np.float32)
                 norms = np.linalg.norm(vecs, axis=1, keepdims=True)
                 vecs = vecs / np.where(norms == 0, 1, norms)
-                sims = vecs @ vecs.T
                 dropped: set[str] = set()
                 results: list[AskResult] = []
-                for i in range(len(group)):
-                    if group[i]["example_id"] in dropped:
-                        continue
-                    for j in np.argsort(-sims[i])[: pol["ann_k"] + 1]:
-                        j = int(j)
-                        if j <= i or sims[i, j] < pol["min_similarity"] or group[j]["example_id"] in dropped:
+                k = min(pol["ann_k"] + 1, len(group))
+                # Corpus-wide coverage makes the full similarity matrix too large: compare a block of rows at a time.
+                for start in range(0, len(group), pol["block_rows"]):
+                    sims = vecs[start: start + pol["block_rows"]] @ vecs.T
+                    top = np.argpartition(-sims, k - 1, axis=1)[:, :k]
+                    for off, row in enumerate(top):
+                        i = start + off
+                        if group[i]["example_id"] in dropped:
                             continue
-                        r = await ctx.jev.ask(QS_DEDUP, {"question_a": group[i]["prompt"], "question_b": group[j]["prompt"]},
-                                              "example_pair", sha256_hex(group[i]["example_id"], group[j]["example_id"]))
-                        results.append(r)
-                        if r.single.outcome == ACCEPT:
-                            dropped.add(group[j]["example_id"])
+                        for j in sorted(map(int, row), key=lambda j, off=off: (-sims[off, j], j)):
+                            if j <= i or sims[off, j] < pol["min_similarity"] or group[j]["example_id"] in dropped:
+                                continue
+                            r = await ctx.jev.ask(QS_DEDUP, {"question_a": group[i]["prompt"], "question_b": group[j]["prompt"]},
+                                                  "example_pair", sha256_hex(group[i]["example_id"], group[j]["example_id"]))
+                            results.append(r)
+                            if r.single.outcome == ACCEPT:
+                                dropped.add(group[j]["example_id"])
 
                 async def write(conn) -> str:
                     await write_decisions(conn, *results)

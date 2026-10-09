@@ -34,6 +34,11 @@ async def _qa_single(ctx) -> list[dict]:
     return out
 
 
+def _enable(ctx, *names: str) -> None:
+    """Build these templates on top of the corpus defaults (as `train build NAME...` does)."""
+    ctx.cache["train_only"] = [*(ctx.reg.corpus.get("training_templates") or []), *names]
+
+
 async def _run_all(ctx) -> None:
     for stage in all_stages():
         rep = await run_stage(ctx, stage, RunOptions())
@@ -66,6 +71,7 @@ async def test_an_example_the_harness_never_fixes_is_rejected(ctx, env) -> None:
 
 
 async def test_code_exported_examples_carry_the_text_they_name(ctx) -> None:
+    _enable(ctx, "triples", "retrieval_pairs")
     await _run_all(ctx)
     rows = await ctx.db.fetch("SELECT payload FROM training_examples WHERE template = 'triples' AND status = 'accepted'")
     assert rows
@@ -80,11 +86,44 @@ async def test_code_exported_examples_carry_the_text_they_name(ctx) -> None:
         assert all(c["text"] for c in [*r["payload"]["positives"], *r["payload"]["negatives"]]), r["payload"]
         texts = [" ".join(c["text"].split()) for c in [*r["payload"]["positives"], *r["payload"]["negatives"]]]
         assert len(texts) == len(set(texts)), r["payload"]  # no negative repeats another passage of the pair
+    facts = await ctx.db.fetch("SELECT payload FROM training_examples WHERE template = 'facts' AND status = 'accepted'")
+    assert facts
+    assert all(r["payload"]["claim"] and r["payload"]["source"]["text"] and "predicate" not in r["payload"] for r in facts)
+
+
+async def test_qa_covers_every_verified_fact(ctx) -> None:
+    await _run_all(ctx)
+    cap = ctx.reg.policy("training.coverage.facts_per_chunk")
+    claims = await ctx.db.fetch("SELECT cl.chunk_id, cl.text FROM claims cl JOIN chunks c ON c.chunk_id = cl.chunk_id "
+                                "WHERE cl.status = 'accepted' AND c.status = 'accepted' AND NOT coalesce(c.boilerplate, false)")
+    assert claims
+    per_chunk: dict[str, set[str]] = {}
+    for c in claims:
+        per_chunk.setdefault(c["chunk_id"], set()).add(c["text"])
+    from jev_graph_builder.pipeline.s8_training import TrainingStage
+
+    asked: dict[str, set[str]] = {}
+    for i in await TrainingStage().enumerate(ctx):
+        if i.payload["template"] == "qa_single":
+            src = i.payload["source"]
+            asked.setdefault(src["chunk_id"], set()).add(src.get("fact"))
+    for chunk_id, texts in per_chunk.items():
+        assert len(asked.get(chunk_id, set())) == min(len(texts), cap), (chunk_id, texts, asked.get(chunk_id))
+        assert asked[chunk_id] <= texts, (chunk_id, asked[chunk_id])
+
+
+async def test_a_question_that_brings_in_unstated_facts_is_rejected(ctx, env) -> None:
+    env.fake_jev.judge = lambda qs, question, state: NO if qs == "train_premise" else None
+    await _run_all(ctx)
+    rows = await ctx.db.fetch("SELECT template, status FROM training_examples WHERE template IN ('qa_single', 'qa_multihop')")
+    assert rows
+    assert not [r for r in rows if r["status"] == "accepted"], rows
 
 
 async def test_a_sampled_run_derives_from_every_accepted_example(ctx) -> None:
     from jev_graph_builder.pipeline.s8_training import DerivedTrainingStage
 
+    _enable(ctx, "retrieval_pairs")
     stages = all_stages()
     for stage in stages:
         if stage.name != "training_derived":
@@ -95,7 +134,7 @@ async def test_a_sampled_run_derives_from_every_accepted_example(ctx) -> None:
     assert sources[0]["n"]
     # `--sample` picks among generated sources; derived examples are built from whatever that produced
     rep = await run_stage(ctx, DerivedTrainingStage(), RunOptions(sample=1e-9, dry_run=True))
-    templates = [t for t in ctx.reg.corpus.get("training_templates") or [] if ctx.reg.training_template(t)["kind"] == "retrieval_pairs"]
+    templates = [t for t in ctx.cache["train_only"] if ctx.reg.training_template(t)["kind"] == "retrieval_pairs"]
     assert templates
     assert rep.selected == sources[0]["n"] * len(templates), (rep.selected, sources[0]["n"], templates)
 
@@ -117,6 +156,7 @@ async def test_an_example_whose_source_is_no_longer_selected_is_superseded(ctx) 
 
 
 async def test_retrieval_negatives_come_from_the_positives_split(ctx) -> None:
+    _enable(ctx, "retrieval_pairs")
     await _run_all(ctx)
     rows = await ctx.db.fetch("SELECT split, source_chunk_ids FROM training_examples WHERE template = 'retrieval_pairs' AND status = 'accepted'")
     assert rows

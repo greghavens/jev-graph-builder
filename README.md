@@ -171,26 +171,27 @@ To share one server between sessions, run `jev-graph-builder mcp --name vcf-docs
 
 ## Training data
 
-After the build, `train` turns the graph into training examples. Each example records the Jev decisions that accepted it.
+After the build, `train` turns the knowledge in the graph into training data for a model that has to learn it. Each example records the Jev decisions that accepted it.
 
 ```bash
 jev-graph-builder train build                          # templates from corpus.yaml training_templates
-jev-graph-builder train build qa_single triples --sample 0.01   # a deterministic 1% sample first
+jev-graph-builder train build --sample 0.01           # a deterministic 1% sample first
 jev-graph-builder train export --out training-export --format jsonl
 ```
 
 | Template | What it holds |
 |---|---|
-| `qa_single` | A question answered from one chunk, written by the coding agent |
-| `qa_multihop` | A question that needs two linked chunks |
-| `retrieval_pairs` | An accepted question with its answering passage and on-topic passages that don't answer it |
-| `triples` | Accepted links and claims, with the text of the chunks they come from |
+| `qa_single` | One question per verified fact (claim), written by the coding agent and answered from the fact's chunk. At most `training.coverage.facts_per_chunk` per chunk; a chunk with no claims gets one question if it has `min_chunk_tokens`. |
+| `qa_multihop` | A question that needs two or more linked chunks |
+| `facts` | Every verified claim as a plain fact with its source chunk, for continued pretraining |
 
-Jev checks every question and answer against `registry/output_rules/` (no references to "the passage" or "this chunk", no answer leaked in the question, no trivia such as dates or file names). When a rule fails, the coding agent rewrites the example and Jev checks it again, up to `training.output_rules.reauthor_rounds` times. An example still in doubt goes to review.
+These three are the defaults. `retrieval_pairs`, `triples` (links between chunks), `rerank_soft_labels`, `instruction` and `graph_reasoning` are also available; the first three train search or graph models rather than teach the corpus.
+
+Jev checks that the answer says nothing its source does not (`train_qa`, `citation_check`) and that the question states or assumes nothing about the documented products its source does not (`train_premise`). It also checks every question and answer against `registry/output_rules/` (no references to "the passage" or "this chunk", no answer leaked in the question, no trivia such as dates or file names). When a rule fails, the coding agent rewrites the example and Jev checks it again, up to `training.output_rules.reauthor_rounds` times. An example still in doubt goes to review.
 
 Examples are split into train, validation and test by document, so no split contains another split's documents. An example whose documents fall in different splits is not exported. `--limit` is shared evenly across the templates, `--resume` finishes only what an earlier run left unfinished, and `--dry-run` shows what would run. `--format` takes `jsonl`, `parquet` or `hf`.
 
-Q&A templates make one coding-agent call per example, so try `--sample` before a full run.
+Q&A templates make one coding-agent call per example (about 164,000 for a corpus of 85,000 chunks), so try `--sample` before a full run.
 
 ## Tests
 

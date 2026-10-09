@@ -8,5 +8,5 @@ scope: >-
 languages: [en]
 doc_sources: ["docs/**/*.md", "docs/**/*.pdf", "docs/**/*.docx", "docs/**/*.html", "docs/**/*.txt"]
 uses: [semantic_search, graph_rag, training_data]
-training_templates: [qa_single, qa_multihop, retrieval_pairs, triples]   # Q&A spec §6 Q5
+training_templates: [qa_single, qa_multihop, facts]   # what teaches the corpus: Q&A over every fact, and the facts as text
 split_policy: component

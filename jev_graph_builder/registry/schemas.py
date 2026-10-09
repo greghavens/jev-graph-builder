@@ -158,6 +158,7 @@ TRAINING_TEMPLATE = {
         "prompt": {"type": ["string", "null"]},
         "fields": {"type": "object", "additionalProperties": _STR},
         "question_sets": {"type": "object", "additionalProperties": _STR},
+        "include": {"type": "array", "items": {"enum": ["edges", "claims"]}, "minItems": 1},
     },
 }
 
