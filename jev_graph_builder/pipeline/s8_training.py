@@ -344,7 +344,10 @@ class TrainingStage(Stage):
             name = group[0].payload["template"]
             tpl = ctx.reg.training_template(name)
             if not tpl.get("prompt"):
-                write_now(todo_items)
+                # A slice at a time, so a large code-built template never queues ahead of harness batches.
+                step = ctx.reg.policy(f"run.concurrency.{self.name}")
+                for k in range(0, len(todo_items), step):
+                    await ready(todo_items[k:k + step])
                 return
             # Jev routes on the template's whole set, so a resumed run gets the same route decision.
             records = [self.record(ctx, tpl["kind"], i.payload["source"]) for i in group]
