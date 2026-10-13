@@ -23,7 +23,7 @@ from jev_graph_builder.ids import sha256_hex, short_key
 from jev_graph_builder.jev.gating import ACCEPT
 from jev_graph_builder.jev.service import AskResult, Decision
 from jev_graph_builder.ledger.ledger import DONE, WorkItem
-from jev_graph_builder.pipeline.common import RUN_STOPS, Context, Deps, Stage, Writer, as_text, pending_in, write_decisions
+from jev_graph_builder.pipeline.common import RUN_STOPS, Context, Deps, Ready, Stage, Writer, as_text, pending_in, write_decisions
 from jev_graph_builder.pipeline.grounding import LOCATED, UNGROUNDED, Grounding, ground, line_of
 from jev_graph_builder.store import repo
 
@@ -102,7 +102,7 @@ class EnrichStage(Stage):
         return {ctx.reg.policy("extract.ontology_file"): {
             "entity_types": ctx.reg.ontology("entity_types"), "claim_types": ctx.reg.ontology("claim_types")}}
 
-    async def prepare(self, ctx: Context, items: list[WorkItem], enumerated: list[WorkItem]) -> None:
+    async def prepare(self, ctx: Context, items: list[WorkItem], enumerated: list[WorkItem], ready: Ready) -> None:
         reg = ctx.reg
         size = reg.policy("extract.batch_chunks")
         batches = [enumerated[i: i + size] for i in range(0, len(enumerated), size)]

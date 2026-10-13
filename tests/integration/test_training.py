@@ -161,3 +161,25 @@ async def test_retrieval_negatives_come_from_the_positives_split(ctx) -> None:
     rows = await ctx.db.fetch("SELECT split, source_chunk_ids FROM training_examples WHERE template = 'retrieval_pairs' AND status = 'accepted'")
     assert rows
     assert all(r["split"] != "cross_split" for r in rows), [r["split"] for r in rows]
+
+
+async def test_each_batch_is_written_before_the_next_is_generated(ctx, env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A full run takes days: examples land in the database batch by batch, not after every batch is generated."""
+    from jev_graph_builder.registry.loader import Registry
+
+    policy, profile = Registry.policy, Registry.profile
+    monkeypatch.setattr(Registry, "policy", lambda self, key: 1 if key == "run.concurrency.harness_jobs" else policy(self, key))
+    monkeypatch.setattr(Registry, "profile", lambda self, kind, name: {**profile(self, kind, name), "max_batch_records": 1})
+    written_before: list[int] = []
+    run = env.harness.run
+
+    async def counting(spec):
+        if spec.prompt_ref.startswith("gen_qa_single") and "revise" not in json.dumps(spec.variables):
+            rows = await ctx.db.fetch("SELECT count(*) AS n FROM training_examples WHERE template = 'qa_single'")
+            written_before.append(rows[0]["n"])
+        return await run(spec)
+
+    monkeypatch.setattr(env.harness, "run", counting)
+    await _run_all(ctx)
+    assert len(written_before) > 1, written_before
+    assert written_before[0] == 0 and written_before[-1] > 0, written_before

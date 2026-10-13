@@ -40,6 +40,8 @@ from jev_graph_builder.store import repo
 from jev_graph_builder.store.db import Database
 
 Writer = Callable[[AsyncConnection], Awaitable[str]]
+# Called by a stage's prepare with items whose batch work is finished, so they are written now.
+Ready = Callable[[list[WorkItem]], Awaitable[None]]
 
 
 # Conditions that stop the whole run (not one item): unfinished items are released, never failed.
@@ -222,10 +224,12 @@ class Stage:
     async def enumerate(self, ctx: Context) -> list[WorkItem]:
         raise NotImplementedError
 
-    async def prepare(self, ctx: Context, items: list[WorkItem], enumerated: list[WorkItem]) -> None:
+    async def prepare(self, ctx: Context, items: list[WorkItem], enumerated: list[WorkItem], ready: Ready) -> None:
         """Batch work for the selected `items`. `enumerated` is every item of the stage, done or not:
         a stage that forms batches or routes on them does so over it, so a resumed run forms the
-        same batches and asks Jev the same questions as an uninterrupted one."""
+        same batches and asks Jev the same questions as an uninterrupted one. A stage whose batches
+        take long passes each finished batch's items to `ready`, which processes and writes them at
+        once; whatever it does not pass on is processed after prepare returns."""
         return None
 
     async def process(self, ctx: Context, item: WorkItem) -> Writer:
@@ -302,14 +306,25 @@ async def run_stage(ctx: Context, stage: Stage, opts: RunOptions, selector: dict
     status = "done"
     try:
         logger.info("stage_started", selected=len(selected), skipped=report.skipped)
+        one, stops = _item_runner(ctx, stage, len(selected), opts, report, logger)
+        left = {i.item_id: i for i in selected}
+
+        async def ready(batch: list[WorkItem]) -> None:
+            mine = [left.pop(i.item_id) for i in batch if i.item_id in left]
+            await asyncio.gather(*(one(i) for i in mine))
+            if stops:
+                raise stops[0]
+
         if selected:
-            await stage.prepare(ctx, selected, enumerated)
-        await _process_all(ctx, stage, selected, opts, report, logger)
+            await stage.prepare(ctx, selected, enumerated, ready)
+        if not stops:
+            await asyncio.gather(*(one(i) for i in left.values()))
         if not report.paused:
             await stage.finalize(ctx, report, opts)
     except RUN_STOPS as exc:
+        if not report.paused:  # a stop while writing a ready batch is already recorded
+            report.errors.append(f"{type(exc).__name__}: {exc}")
         report.paused = True
-        report.errors.append(f"{type(exc).__name__}: {exc}")
     except Exception as exc:
         status = "failed"
         report.errors.append(f"{type(exc).__name__}: {exc}")
@@ -323,30 +338,32 @@ async def run_stage(ctx: Context, stage: Stage, opts: RunOptions, selector: dict
     return report
 
 
-async def _process_all(ctx: Context, stage: Stage, items: list[WorkItem], opts: RunOptions, report: RunReport, logger: Any) -> None:
-    concurrency = opts.concurrency or ctx.reg.policy(f"run.concurrency.{stage.name}")
-    sem = asyncio.Semaphore(concurrency)
-    stop = asyncio.Event()
+def _item_runner(ctx: Context, stage: Stage, total: int, opts: RunOptions, report: RunReport,
+                 logger: Any) -> tuple[Callable[[WorkItem], Awaitable[None]], list[BaseException]]:
+    """`one(item)` processes and writes one item under the stage's concurrency; the first run stop
+    (e.g. a usage limit) is recorded in the returned list and later items are left for a resume."""
+    sem = asyncio.Semaphore(opts.concurrency or ctx.reg.policy(f"run.concurrency.{stage.name}"))
+    every = ctx.reg.policy("run.progress_every")
+    stops: list[BaseException] = []
 
     async def one(item: WorkItem) -> None:
         async with sem:
-            if stop.is_set():
+            if stops:
                 return
             try:
                 await run_item(ctx, stage, item, report, logger)
             except RUN_STOPS as exc:
-                if not stop.is_set():
-                    stop.set()
+                if not stops:
+                    stops.append(exc)
                     report.paused = True
                     report.errors.append(f"{type(exc).__name__}: {exc}")
                 return
             finished = report.done + report.review + report.failed
             if finished % every == 0:
-                logger.info("stage_progress", finished=finished, selected=len(items), done=report.done,
+                logger.info("stage_progress", finished=finished, selected=total, done=report.done,
                             review=report.review, failed=report.failed)
 
-    every = ctx.reg.policy("run.progress_every")
-    await asyncio.gather(*(one(i) for i in items))
+    return one, stops
 
 
 async def run_item(ctx: Context, stage: Stage, item: WorkItem, report: RunReport, logger: Any) -> None:

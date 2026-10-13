@@ -38,7 +38,7 @@ from jev_graph_builder.jev.service import AskResult, Decision
 from jev_graph_builder.ledger.ledger import DONE, REVIEW, WorkItem
 from jev_graph_builder.pipeline.citations import check_sentences
 from jev_graph_builder.pipeline.common import (
-    RUN_STOPS, Context, Deps, RunOptions, RunReport, Stage, Writer, enqueue_review, pending_in, run_single_item,
+    RUN_STOPS, Context, Deps, Ready, RunOptions, RunReport, Stage, Writer, enqueue_review, pending_in, run_single_item,
     write_decisions,
 )
 from jev_graph_builder.pipeline.grounding import UNGROUNDED, ground
@@ -317,7 +317,7 @@ class TrainingStage(Stage):
     async def _texts(self, ctx: Context, ids: list[str]) -> dict[str, str]:
         return {r["chunk_id"]: r["text"] for r in await ctx.db.fetch("SELECT chunk_id, text FROM chunks WHERE chunk_id = ANY(%s)", (ids,))}
 
-    async def prepare(self, ctx: Context, items: list[WorkItem], enumerated: list[WorkItem]) -> None:
+    async def prepare(self, ctx: Context, items: list[WorkItem], enumerated: list[WorkItem], ready: Ready) -> None:
         triples = [i.payload["source"] for i in items if i.payload["kind"] == "triples"]
         if triples:
             ids = sorted({c for t in triples for c in ((t["src_id"], t["dst_id"]) if t["triple"] == "edge" else (t["chunk_id"],))})
@@ -329,11 +329,22 @@ class TrainingStage(Stage):
             by_tpl[i.payload["template"]].append(i)
         sem = asyncio.Semaphore(ctx.reg.policy("run.concurrency.harness_jobs"))
         stopped: list[BaseException] = []
+        writes: list[asyncio.Task[None]] = []
+
+        def write_now(part: list[WorkItem]) -> None:
+            """Each finished batch is checked and written while the harness moves on to the next one."""
+            async def w() -> None:
+                try:
+                    await ready(part)
+                except RUN_STOPS as exc:
+                    stopped.append(exc)
+            writes.append(asyncio.create_task(w()))
 
         async def run(group: list[WorkItem], todo_items: list[WorkItem]) -> None:
             name = group[0].payload["template"]
             tpl = ctx.reg.training_template(name)
             if not tpl.get("prompt"):
+                write_now(todo_items)
                 return
             # Jev routes on the template's whole set, so a resumed run gets the same route decision.
             records = [self.record(ctx, tpl["kind"], i.payload["source"]) for i in group]
@@ -357,6 +368,7 @@ class TrainingStage(Stage):
                                todo_items: list[WorkItem]) -> None:
             profile = await ctx.jobs.choose_profile(name, {"records": records, "prompt": tpl["prompt"]})
             by_item = {i.item_id: r for i, r in zip(group, records, strict=True)}
+            item_of = {by_item[i.item_id]["id"]: i for i in todo_items}
             todo = [by_item[i.item_id] for i in todo_items]
             cap = ctx.reg.profile("harness", profile).get("max_batch_records") or len(todo)
             rules = ctx.reg.question_set(OUTPUT_RULES_QS).questions
@@ -368,10 +380,12 @@ class TrainingStage(Stage):
                     run_id = outcome.harness_run_ids[-1] if outcome.harness_run_ids else None
                     cache[f"{name}:{r['id']}"] = (outcome.records.get(r["id"]), profile, outcome.missing.get(r["id"], ""), run_id)
                 await self.reauthor(ctx, name, tpl, part, profile, variables)
+                write_now([item_of[r["id"]] for r in part])
 
         # Every started job finishes (its output and harness run are kept for a resume) before a stop is raised.
         results = await asyncio.gather(*(run(b, todo) for b, todo in pending_in(list(by_tpl.values()), items)),
                                        return_exceptions=True)
+        results += await asyncio.gather(*writes, return_exceptions=True)
         errors = [r for r in results if isinstance(r, BaseException)]
         if stopped or errors:
             raise (stopped or errors)[0]

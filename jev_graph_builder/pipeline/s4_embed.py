@@ -18,7 +18,7 @@ from typing import Any
 import jinja2
 
 from jev_graph_builder.ledger.ledger import DONE, WorkItem
-from jev_graph_builder.pipeline.common import Context, Deps, Stage, Writer
+from jev_graph_builder.pipeline.common import Context, Deps, Ready, Stage, Writer
 
 CHUNK, ENTITY, CLAIM = "chunk", "entity", "claim"
 _SEP = ":"
@@ -60,7 +60,7 @@ class EmbedStage(Stage):
             items.append(self.item(ctx, item_key(CLAIM, r["claim_id"]), text, payload=text))
         return items
 
-    async def prepare(self, ctx: Context, items: list[WorkItem], enumerated: list[WorkItem]) -> None:
+    async def prepare(self, ctx: Context, items: list[WorkItem], enumerated: list[WorkItem], ready: Ready) -> None:
         size = ctx.reg.policy("embed.batch_size")
         cache: dict[str, list[float]] = ctx.cache.setdefault(CACHE_KEY, {})
         for start in range(0, len(items), size):
