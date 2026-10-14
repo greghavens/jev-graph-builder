@@ -100,7 +100,7 @@ Every command prints JSON on stdout. Progress and logs go to stderr.
 
 `jev-graph-builder mcp` is an MCP server with two tools:
 
-- `graph_context`: takes a question and returns cited passages (`p1`, `p2`, ...). Each has its text, heading path and source file, found by search and then by following the graph's verified links. Jev decides whether they can answer the question; if not, `answerable` is false and no passages come back. The agent session writes the answer itself.
+- `graph_context`: takes a question and returns cited passages (`p1`, `p2`, ...). Each has its text, heading path and source file, found by search and then by following the graph's verified links. Every passage found is returned, with no token cap. `answerable` is true when at least one passage was found. The agent session writes the answer itself.
 - `search`: ranked chunks for a query, without following links.
 
 The server needs the directory you ran `build` in (its `jev-graph-builder.yaml` and `registry/`) and your TypeSafe key. In the examples, replace `/path/to/build-dir` with that directory and `/path/to/jev-graph-builder` with where you installed this tool.
