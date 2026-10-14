@@ -97,8 +97,10 @@ async def communities_for(ctx: Context, chunk_ids: list[str]) -> list[dict[str, 
         "ORDER BY community_id", (ctx.corpus_id, chunk_ids))
 
 
-def assemble(ctx: Context, nodes: dict[str, dict[str, Any]], communities: list[dict[str, Any]], max_tokens: int) -> dict[str, dict[str, Any]]:
-    """Dedupe, order by document then position, cap at the answer's token limit; assign citation IDs."""
+def assemble(ctx: Context, nodes: dict[str, dict[str, Any]], communities: list[dict[str, Any]], max_tokens: int | None = None
+             ) -> dict[str, dict[str, Any]]:
+    """Dedupe, order by document then position, assign citation IDs. `max_tokens` (only `ask`, sized to its answer
+    model's window) drops what does not fit; without it every passage is kept."""
     est = ctx.jev.provider.estimator
     ordered = sorted(nodes.values(), key=lambda n: (n.get("doc_id") or "", n.get("ord") or 0, n["chunk_id"]))
     passages: dict[str, dict[str, Any]] = {}
@@ -106,7 +108,7 @@ def assemble(ctx: Context, nodes: dict[str, dict[str, Any]], communities: list[d
     items = [("chunk", n["chunk_id"], n["text"], n) for n in ordered] + [("community", c["community_id"], c["summary"], c) for c in communities]
     for kind, ident, text, src in items:
         tokens = est.text(text)
-        if used + tokens > max_tokens:
+        if max_tokens is not None and used + tokens > max_tokens:
             continue
         used += tokens
         cid = f"{ctx.reg.policy('query.citation_prefix')}{len(passages) + 1}"
@@ -130,7 +132,7 @@ async def answer(ctx: Context, query: str, plan: dict[str, Any], passages: dict[
 async def context(ctx: Context, query: str, max_tokens: int | None = None,
                   routed: tuple[str, dict[str, Any], Decision] | None = None, gate: bool = True) -> dict[str, Any]:
     """Route (unless `routed` is given), seed, expand and assemble the cited passages for `query`, capped at
-    `max_tokens` (default: policy `query.context_tokens`). With `gate`, `answerable` is Jev's decision and no
+    `max_tokens` when given (no cap otherwise). With `gate`, `answerable` is Jev's decision and no
     passages are returned when it is no; without it (a session that judges the passages itself), `answerable` only
     says whether any passages were found. The decisions made here are persisted here."""
     intent, plan, route_d = routed or await route(ctx, query)
@@ -148,7 +150,7 @@ async def context(ctx: Context, query: str, max_tokens: int | None = None,
     nodes, edges, exp_d = await expand(ctx, query, seeds, plan)
     decisions.extend(exp_d)
     comms = await communities_for(ctx, list(nodes)) if plan.get("use_communities") else []
-    passages = assemble(ctx, nodes, comms, max_tokens or ctx.reg.policy("query.context_tokens"))
+    passages = assemble(ctx, nodes, comms, max_tokens)
     texts = {k: v["text"] for k, v in passages.items()}
     rejected = False
     if gate:
