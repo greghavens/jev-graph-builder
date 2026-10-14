@@ -67,7 +67,7 @@ jev:
     backoff_initial_s: 0.5
     backoff_max_s: 30
     backoff_jitter: 0.25
-    http_statuses: [408, 409, 425, 429, 500, 502, 503, 504, 529]
+    http_statuses: [408, 409, 425, 429, 499, 500, 502, 503, 504, 529]
     total_timeout_s: 300
   limiter:
     backoff_factor: 0.7

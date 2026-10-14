@@ -129,6 +129,7 @@ class TypeSafeProvider:
         self.name = profile["name"]
         self.model = profile["model"]
         self.limiter = _limiter(profile, policies)
+        self.retried = set(policies["jev"]["retry"]["http_statuses"])
         self.estimator = TokenEstimator(profile["chars_per_token"])
         key = secret(profile["key_env"])
         if key is None and transport is None:
@@ -152,7 +153,8 @@ class TypeSafeProvider:
         except TypeSafeAPIError as exc:
             if exc.status == CREDITS_EXHAUSTED_STATUS:
                 raise JevCreditsExhausted(str(exc)) from exc
-            if exc.status in THROTTLE_STATUSES or exc.status >= 500:
+            # A status still failing after its retries is an outage, not a malformed request.
+            if exc.status in THROTTLE_STATUSES or exc.status in self.retried or exc.status >= 500:
                 raise JevUnavailable(str(exc)) from exc
             raise JevRequestError(str(exc)) from exc
         except TypeSafeAPIConnectionError as exc:
@@ -209,7 +211,7 @@ class GatewayProvider:
             break
         if resp.status_code == CREDITS_EXHAUSTED_STATUS:
             raise JevCreditsExhausted(f"gateway {resp.status_code}")
-        if resp.status_code >= 500 or resp.status_code in THROTTLE_STATUSES:
+        if resp.status_code >= 500 or resp.status_code in THROTTLE_STATUSES or resp.status_code in self._retries["http_statuses"]:
             raise JevUnavailable(f"gateway {resp.status_code}")
         if resp.status_code >= 400:
             raise JevRequestError(f"gateway {resp.status_code}: {resp.text[:500]}")

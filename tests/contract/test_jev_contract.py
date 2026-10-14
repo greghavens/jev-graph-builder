@@ -85,6 +85,18 @@ async def test_throttle_adapts_limiter_and_raises_unavailable(reg: Registry) -> 
     await prov.aclose()
 
 
+async def test_499_is_retried_then_unavailable(reg: Registry) -> None:
+    """Jev's 499 'Unable to complete this request' is transient: retried, and an outage if it persists."""
+    calls: list = []
+    policies = json.loads(json.dumps(reg.policies))
+    policies["jev"]["retry"].update(max_retries=1, backoff_initial_s=0, backoff_max_s=0)
+    prov = TypeSafeProvider(_profile(reg), policies, transport=_replay(499, {"error": {"message": "Unable to complete this request."}}, seen=calls))
+    with pytest.raises(JevUnavailable):
+        await prov.call({"x": {"t": "a"}}, {"k": {"type": "noul", "instructions": "Is `x.t` set?"}})
+    assert len(calls) == 2
+    await prov.aclose()
+
+
 async def test_no_credits_is_a_run_stop_not_an_item_failure(reg: Registry) -> None:
     """402: every call would fail until credits are added, so the provider raises the run-stop error."""
     prov = TypeSafeProvider(_profile(reg), reg.policies, transport=_replay(402, {"error": {"message": "no credits"}}))
