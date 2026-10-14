@@ -128,10 +128,11 @@ async def answer(ctx: Context, query: str, plan: dict[str, Any], passages: dict[
 
 
 async def context(ctx: Context, query: str, max_tokens: int | None = None,
-                  routed: tuple[str, dict[str, Any], Decision] | None = None) -> dict[str, Any]:
+                  routed: tuple[str, dict[str, Any], Decision] | None = None, gate: bool = True) -> dict[str, Any]:
     """Route (unless `routed` is given), seed, expand and assemble the cited passages for `query`, capped at
-    `max_tokens` (default: policy `query.context_tokens`). `answerable` is Jev's decision; when it is no, no passages
-    are returned. The decisions made here are persisted here."""
+    `max_tokens` (default: policy `query.context_tokens`). With `gate`, `answerable` is Jev's decision and no
+    passages are returned when it is no; without it (a session that judges the passages itself), `answerable` only
+    says whether any passages were found. The decisions made here are persisted here."""
     intent, plan, route_d = routed or await route(ctx, query)
     decisions: list[Decision] = [route_d]
     out: dict[str, Any] = {"query": query, "intent": intent, "plan": plan, "answerable": False, "passages": {},
@@ -149,13 +150,16 @@ async def context(ctx: Context, query: str, max_tokens: int | None = None,
     comms = await communities_for(ctx, list(nodes)) if plan.get("use_communities") else []
     passages = assemble(ctx, nodes, comms, max_tokens or ctx.reg.policy("query.context_tokens"))
     texts = {k: v["text"] for k, v in passages.items()}
-    # Jev, not the harness or the session, decides whether the passages can answer the query.
-    gate = await ctx.jev.ask(QS_ANSWERABLE, {"query": query, "passages": [{"id": k, "text": t} for k, t in texts.items()]},
-                             "query", sha256_hex(query, sorted(texts)))
-    decisions.append(gate.single)
+    rejected = False
+    if gate:
+        # Jev, not the answer harness, decides whether the passages can answer the query.
+        verdict = await ctx.jev.ask(QS_ANSWERABLE, {"query": query, "passages": [{"id": k, "text": t} for k, t in texts.items()]},
+                                    "query", sha256_hex(query, sorted(texts)))
+        decisions.append(verdict.single)
+        rejected = verdict.single.outcome == REJECT
     await persist(ctx, decisions)
     out["subgraph"] = {"nodes": sorted(nodes), "edges": edges}
-    if texts and gate.single.outcome != REJECT:
+    if texts and not rejected:
         out.update(answerable=True, passages=passages)
     return {**out, "decisions": decisions}
 

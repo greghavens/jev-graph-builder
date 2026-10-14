@@ -142,6 +142,10 @@ async def _check_mcp_context(ctx, query: str, answer: dict) -> None:
     assert all(v["source_uri"] and v["heading_path"] is not None for v in got["passages"].values() if v["kind"] == "chunk")
     stored = await ctx.db.fetch("SELECT decision_id FROM decisions WHERE decision_id = ANY(%s)", (got["decision_ids"],))
     assert got["decision_ids"] and len(stored) == len(set(got["decision_ids"]))
+    # The session judges the passages itself: no answerable gate on the MCP path.
+    gated = await ctx.db.fetch("SELECT 1 FROM decisions WHERE decision_id = ANY(%s) AND question_set = 'answerable'",
+                               (got["decision_ids"],))
+    assert not gated
 
 
 async def test_a_new_question_set_version_reuses_answers_to_unchanged_questions(settings, monkeypatch) -> None:

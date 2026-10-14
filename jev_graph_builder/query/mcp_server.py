@@ -1,8 +1,8 @@
 """MCP server: the graph as context for a coding-agent session (Claude Code, Codex, OpenCode).
 
 `graph_context` returns Graph RAG's cited passages (`query.graphrag.context`): Jev routes the
-question, search seeds it, accepted edges are expanded through Jev's gate, and Jev decides the
-passages can answer it. The session does its own answering. `search` is plain semantic search
+question, search seeds it and accepted edges are expanded through Jev's gate. There is no answerable
+gate: the session reads the passages and does its own answering. `search` is plain semantic search
 (§9.1). Runs over stdio or streamable HTTP, with `JGB_READER_DSN` when set (§17 least privilege).
 """
 
@@ -47,8 +47,8 @@ def create_server(name: str, instructions: str, open_ctx: Callable[[], Awaitable
     async def graph_context(query: str) -> dict[str, Any]:
         """Cited passages from the documents' knowledge graph for a question: search seeds, then verified links
         between chunks are followed. Each passage has an ID (p1, p2, ...), text, title, heading path and source
-        document. `answerable` is false (and `passages` empty) when the graph has nothing that answers it."""
-        found = public(await context(state["ctx"], query))
+        document. `answerable` is false (and `passages` empty) only when nothing was found; judge relevance yourself."""
+        found = public(await context(state["ctx"], query, gate=False))
         _log.info("mcp_graph_context", intent=found["intent"], answerable=found["answerable"],
                   passages=len(found["passages"]), decision_ids=found["decision_ids"])
         return found
