@@ -257,4 +257,4 @@ JGB_TEST_DSN=postgresql://user@host/db pytest tests/integration   # needs Postgr
 
 ## License
 
-[Apache License 2.0](LICENSE).
+[Apache License 2.0](https://github.com/greghavens/jev-graph-builder/blob/main/LICENSE).

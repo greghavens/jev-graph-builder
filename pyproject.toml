@@ -3,6 +3,8 @@ name = "jev-graph-builder"
 version = "0.1.0"
 description = "Jev-decided, harness-enriched, resumable vector property graph over PostgreSQL + pgvector"
 license = "Apache-2.0"
+readme = "README.md"
+authors = [{ name = "Greg Havens" }]
 requires-python = ">=3.11"
 dependencies = [
   "typesafe-sdk>=0.7.1,<0.8",
@@ -38,6 +40,10 @@ dependencies = [
   "py3langid>=0.4.0",
   "mcp>=2.2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/greghavens/jev-graph-builder"
+Source = "https://github.com/greghavens/jev-graph-builder"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "testcontainers[postgres]>=4.8", "pyflakes>=3"]
