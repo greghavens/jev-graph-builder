@@ -1,6 +1,6 @@
 [project]
 name = "jev-graph-builder"
-version = "0.1.0"
+version = "0.1.1"
 description = "Jev-decided, harness-enriched, resumable vector property graph over PostgreSQL + pgvector"
 license = "Apache-2.0"
 readme = "README.md"
