@@ -23,7 +23,7 @@ At each step the coding agent or code proposes, and [Jev](https://typesafe.ai) (
 ## Quickstart
 
 ```bash
-pip install git+https://github.com/greghavens/jev-graph-builder
+pip install jev-graph-builder
 
 export TYPESAFE_API_KEY=...        # your TypeSafe key
 jev-graph-builder --harness claude_code build ./my-docs
@@ -120,7 +120,7 @@ Every command prints JSON on stdout. Progress and logs go to stderr.
 - `graph_context`: takes a question and returns cited passages (`p1`, `p2`, ...). Each has its text, heading path and source file, found by search and then by following the graph's verified links. Every passage found is returned, with no token cap. `answerable` is true when at least one passage was found. The agent session writes the answer itself.
 - `search`: ranked chunks for a query, without following links.
 
-The server needs the directory you ran `build` in (its `jev-graph-builder.yaml` and `registry/`) and your TypeSafe key. In the examples, replace `/path/to/build-dir` with that directory and `/path/to/jev-graph-builder` with where you installed this tool.
+The server needs the directory you ran `build` in (its `jev-graph-builder.yaml` and `registry/`) and your TypeSafe key. In the examples, replace `/path/to/build-dir` with that directory and `/path/to/jev-graph-builder` with the full path that `which jev-graph-builder` prints.
 
 Name the server after what the documents cover (`vcf-docs` below), not after this tool: the agent sees tools as `mcp__vcf-docs__graph_context`, and a descriptive name helps it pick them for the right questions. Use that name as the client's server key and pass it with `--name` (or set `mcp_name` in `jev-graph-builder.yaml`) so the server reports the same name. The server also tells the session what the documents cover, from `corpus.yaml`'s `scope`.
 
@@ -130,7 +130,7 @@ With Claude Code you can register it for every session instead of one project:
 claude mcp add --scope user vcf-docs \
   -e JEV_GRAPH_BUILDER_CONFIG=/path/to/build-dir/jev-graph-builder.yaml \
   -e JGB_REGISTRY_PATH=/path/to/build-dir/registry \
-  -- /path/to/jev-graph-builder/.venv/bin/jev-graph-builder mcp --name vcf-docs
+  -- /path/to/jev-graph-builder mcp --name vcf-docs
 ```
 
 **Claude Code**: `.mcp.json` in your project:
@@ -140,7 +140,7 @@ claude mcp add --scope user vcf-docs \
   "mcpServers": {
     "vcf-docs": {
       "type": "stdio",
-      "command": "/path/to/jev-graph-builder/.venv/bin/jev-graph-builder",
+      "command": "/path/to/jev-graph-builder",
       "args": ["mcp", "--name", "vcf-docs"],
       "env": {
         "JEV_GRAPH_BUILDER_CONFIG": "/path/to/build-dir/jev-graph-builder.yaml",
@@ -156,7 +156,7 @@ claude mcp add --scope user vcf-docs \
 
 ```toml
 [mcp_servers.vcf-docs]
-command = "/path/to/jev-graph-builder/.venv/bin/jev-graph-builder"
+command = "/path/to/jev-graph-builder"
 args = ["mcp", "--name", "vcf-docs"]
 env = { JEV_GRAPH_BUILDER_CONFIG = "/path/to/build-dir/jev-graph-builder.yaml", JGB_REGISTRY_PATH = "/path/to/build-dir/registry" }
 env_vars = ["TYPESAFE_API_KEY"]
@@ -172,7 +172,7 @@ tool_timeout_sec = 300
   "mcp": {
     "vcf-docs": {
       "type": "local",
-      "command": ["/path/to/jev-graph-builder/.venv/bin/jev-graph-builder", "mcp", "--name", "vcf-docs"],
+      "command": ["/path/to/jev-graph-builder", "mcp", "--name", "vcf-docs"],
       "enabled": true,
       "environment": {
         "JEV_GRAPH_BUILDER_CONFIG": "/path/to/build-dir/jev-graph-builder.yaml",
