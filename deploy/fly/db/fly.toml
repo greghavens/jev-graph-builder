@@ -1,0 +1,18 @@
+# Postgres + pgvector for the hosted MCP server. No [[services]]: reachable only on the app's private network.
+app = "vcf-docs-db"
+primary_region = "iad"
+
+[build]
+  image = "pgvector/pgvector:0.7.4-pg16"
+
+[env]
+  POSTGRES_DB = "jev_graph_builder"
+  PGDATA = "/var/lib/postgresql/data/pgdata"
+
+[mounts]
+  source = "pgdata"
+  destination = "/var/lib/postgresql/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "2gb"

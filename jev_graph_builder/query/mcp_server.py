@@ -28,20 +28,33 @@ def instructions_for(reg: Registry) -> str:
     return f"{reg.policy('query.mcp_instructions')}\n\n{reg.corpus['scope']}"
 
 
-def create_server(name: str, instructions: str, open_ctx: Callable[[], Awaitable[Context]], close_ctx: Callable[[Context], Awaitable[None]]) -> MCPServer:
+def create_server(name: str, instructions: str, open_ctx: Callable[[], Awaitable[Context]], close_ctx: Callable[[Context], Awaitable[None]],
+                  oauth: Any = None, mcp_path: str = "/mcp") -> MCPServer:
     """`name` is the server name the session sees; `instructions` tell it when to call the tools
-    (`instructions_for` builds them from the Registry)."""
+    (`instructions_for` builds them from the Registry). `oauth` (`mcp_auth.GitHubOAuth`) protects an HTTPS
+    deployment: only signed-in, allowed GitHub users can call the tools."""
     state: dict[str, Context] = {}
 
     @asynccontextmanager
     async def lifespan(_: MCPServer) -> AsyncIterator[None]:
         state["ctx"] = await open_ctx()
+        if oauth:
+            await oauth.open()
         try:
             yield
         finally:
+            if oauth:
+                await oauth.close()
             await close_ctx(state["ctx"])
 
-    server = MCPServer(name, instructions=instructions, lifespan=lifespan)
+    if oauth:
+        from jev_graph_builder import mcp_auth
+
+        server = MCPServer(name, instructions=instructions, lifespan=lifespan, auth_server_provider=oauth,
+                           auth=mcp_auth.settings(oauth, mcp_path))
+        server.custom_route(mcp_auth.CALLBACK_PATH, methods=["GET"])(oauth.callback)
+    else:
+        server = MCPServer(name, instructions=instructions, lifespan=lifespan)
 
     @server.tool()
     async def graph_context(query: str) -> dict[str, Any]:

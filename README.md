@@ -2,6 +2,24 @@
 
 Turns a folder of documents into a searchable knowledge graph in PostgreSQL (pgvector). A coding agent (Claude Code or Codex) drafts the text: extractions, summaries, an ontology. Jev checks every piece before it goes into the graph.
 
+What you get:
+
+- **Graph RAG for your assistants.** An MCP server that Claude Code, Codex, OpenCode, claude.ai and ChatGPT can query. It finds passages by search, then follows the graph's verified links to the related passages a plain vector search misses, and returns them all with citations.
+- **Training data.** Q&A, multi-hop Q&A and fact sets drawn from the graph, for teaching a model what the documents say.
+- **A record of every decision.** Each passage, fact and link in the graph traces back to the Jev decision that accepted it.
+
+## How it works
+
+1. **Read** your documents and keep the ones that match the corpus scope.
+2. **Split** each document into chunks along its headings, with document metadata.
+3. **Extract** the entities and facts each chunk states, and summarise it.
+4. **Embed** the chunks for vector search (all-MiniLM-L6-v2 by default).
+5. **Merge** entities that are the same thing under different names.
+6. **Link** chunks that relate to each other with typed relations drafted from your documents, for example one elaborates, depends on or supersedes another. Candidate links come from nearest-neighbour search across the whole corpus, so a new document is linked to the existing ones.
+7. **Audit** the result.
+
+At each step the coding agent or code proposes, and [Jev](https://typesafe.ai) (TypeSafe's decision model) decides: it answers a fixed yes/no or multiple-choice question with a calibrated probability, and only what passes goes into the graph. When a source document changes, ingest replaces the old version and everything derived from it, and the new version is linked again.
+
 ## Quickstart
 
 ```bash
@@ -167,7 +185,44 @@ tool_timeout_sec = 300
 }
 ```
 
-To share one server between sessions, run `jev-graph-builder mcp --name vcf-docs --transport streamable-http --port 8765` and point clients at `http://127.0.0.1:8765/mcp`. The HTTP server has no authentication, so keep it on `127.0.0.1` (the default). To run the server with least privilege, set `JGB_READER_DSN` to a database user with the `jev_graph_builder_reader` role. That role can read the graph and can only add records of its own Jev calls and decisions.
+To share one server between sessions, run `jev-graph-builder mcp --name vcf-docs --transport streamable-http --port 8765` and point clients at `http://127.0.0.1:8765/mcp`. Without `MCP_PUBLIC_URL` set, the HTTP server has no authentication, so keep it on `127.0.0.1` (the default). To run the server with least privilege, set `JGB_READER_DSN` to a database user with the `jev_graph_builder_reader` role. That role can read the graph and can only add records of its own Jev calls and decisions.
+
+## Host it for claude.ai and ChatGPT
+
+Web clients need the server on a public HTTPS address with OAuth sign-in. When `MCP_PUBLIC_URL` is set, `mcp --transport streamable-http` acts as its own OAuth server: clients register themselves, you sign in with GitHub, and only the GitHub logins in `MCP_ALLOWED_GITHUB_USERS` get a token. Sign-ins are kept in the database, so a restart doesn't sign anyone out.
+
+| Environment variable | Value |
+|---|---|
+| `MCP_PUBLIC_URL` | The server's public address, e.g. `https://my-docs-mcp.fly.dev` |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | From a GitHub OAuth app (below) |
+| `MCP_ALLOWED_GITHUB_USERS` | Comma-separated GitHub logins allowed to connect |
+| `JGB_DSN` | The database holding the graph |
+| `TYPESAFE_API_KEY` | Your TypeSafe key |
+
+`deploy/fly/` has a working setup for [Fly.io](https://fly.io): a private Postgres + pgvector app (`db/`) and the MCP server (`mcp/`), which stops when idle and starts on the first request. Change the app names in both `fly.toml` files and `MCP_PUBLIC_URL` to your own, then:
+
+1. **Database.** Create the app and its volume, set `POSTGRES_PASSWORD`, and deploy:
+   ```bash
+   fly apps create my-docs-db
+   fly volumes create pgdata -a my-docs-db --size 20
+   fly secrets set -a my-docs-db POSTGRES_PASSWORD=...
+   fly deploy -c deploy/fly/db/fly.toml
+   ```
+2. **Load the graph.** With `fly proxy 15432:5432 -a my-docs-db` running, copy your build database into it with `pg_dump` and `psql` (`--no-owner --no-privileges`).
+3. **GitHub OAuth app.** At [github.com/settings/applications/new](https://github.com/settings/applications/new), set the homepage to `MCP_PUBLIC_URL` and the callback URL to `MCP_PUBLIC_URL` + `/github/callback`. Leave wildcard redirects and device flow off. Generate a client secret.
+4. **Server.** Copy your build directory's `registry/` to `deploy/fly/mcp/registry/` (it is git-ignored), set the secrets and deploy:
+   ```bash
+   fly apps create my-docs-mcp
+   fly secrets set -a my-docs-mcp TYPESAFE_API_KEY=... GITHUB_CLIENT_ID=... GITHUB_CLIENT_SECRET=... \
+     MCP_ALLOWED_GITHUB_USERS=your-login JGB_DSN=postgresql://postgres:...@my-docs-db.internal:5432/jev_graph_builder
+   fly deploy . -c deploy/fly/mcp/fly.toml --dockerfile deploy/fly/mcp/Dockerfile
+   ```
+   Run `fly secrets set` in your own terminal, not through an AI agent, so the secrets stay out of its transcript.
+5. **Connect.**
+   - **claude.ai:** Settings → Connectors → Add custom connector, URL `MCP_PUBLIC_URL` + `/mcp`. Leave the OAuth fields blank.
+   - **ChatGPT:** turn on Developer mode, then add a connector with the same URL and OAuth.
+
+   Both send you to GitHub to sign in.
 
 ## Training data
 
@@ -200,3 +255,7 @@ pip install -e '.[dev]'
 pytest tests/unit tests/contract                                  # no services needed
 JGB_TEST_DSN=postgresql://user@host/db pytest tests/integration   # needs PostgreSQL with pgvector
 ```
+
+## License
+
+[Apache License 2.0](LICENSE).

@@ -37,3 +37,9 @@ literals:
   - success without structured_output
   - "final message is not JSON: "
   - no valid extraction                                                   # review reason detail
+  - https://github.com/login/oauth/authorize                              # GitHub OAuth endpoints (mcp_auth)
+  - https://github.com/login/oauth/access_token
+  - https://api.github.com/user
+  - application/vnd.github+json                                           # GitHub API media type
+  - Sign-in expired or invalid. Start again from your client.             # OAuth callback messages
+  - "GitHub user  is not allowed on this server."

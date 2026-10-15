@@ -1,0 +1,17 @@
+app = "vcf-docs-mcp"
+primary_region = "iad"
+
+[env]
+  JGB_MCP_NAME = "vcf-docs"
+  MCP_PUBLIC_URL = "https://vcf-docs-mcp.fly.dev"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2gb"

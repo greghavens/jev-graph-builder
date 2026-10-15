@@ -359,12 +359,22 @@ def mcp(transport: str = typer.Option("stdio", "--transport", help="stdio | stre
     from jev_graph_builder.query.mcp_server import create_server, instructions_for
     from jev_graph_builder.registry.loader import Registry
 
+    from jev_graph_builder import mcp_auth
+
     settings = _settings()
-    server = create_server(name or settings.mcp_name, instructions_for(Registry(settings.resolved_registry())), *_reader_context())
+    oauth = mcp_auth.from_env(os.environ.get("JGB_READER_DSN") or settings.dsn) if transport == "streamable-http" else None
+    server = create_server(name or settings.mcp_name, instructions_for(Registry(settings.resolved_registry())), *_reader_context(),
+                           oauth=oauth)
     if transport == "stdio":
         server.run("stdio")
     elif transport == "streamable-http" and port:
-        server.run("streamable-http", host=host, port=port)
+        from urllib.parse import urlparse
+
+        from mcp.server.transport_security import TransportSecuritySettings
+
+        # Behind a public HTTPS proxy the Host header is the public name, not the bind address.
+        security = TransportSecuritySettings(allowed_hosts=[urlparse(oauth.public_url).netloc]) if oauth else None
+        server.run("streamable-http", host=host, port=port, transport_security=security)
     else:
         _fail(f"--transport {transport!r} needs to be stdio, or streamable-http with --port")
 
