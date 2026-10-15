@@ -24,7 +24,7 @@ from jev_graph_builder.ids import pairs, sha256_hex, short_key
 from jev_graph_builder.jev.gating import ACCEPT
 from jev_graph_builder.ledger.ledger import DONE, WorkItem
 from jev_graph_builder.pipeline.common import (
-    Context, Deps, RunOptions, RunReport, Stage, Writer, run_single_item, write_decisions,
+    Context, Deps, RunOptions, RunReport, Stage, Writer, new_rows, run_single_item, write_decisions,
 )
 from jev_graph_builder.pipeline.unionfind import merge
 from jev_graph_builder.store import knn, repo
@@ -154,9 +154,18 @@ class EntityStage(Stage):
             out[r["entity_id"]].append(r["text"][s:e])
         return out
 
+    async def undecided(self, ctx: Context, found: dict[str, set[str]]) -> dict[str, set[str]]:
+        """Only pairs with a new entity and no decision yet: pairs already judged are never asked again."""
+        new = await new_rows(ctx, self.name, "entities")
+        ids = [p for p in found if any(e in new for e in p.split(PAIR_SEP))]
+        decided = {r["subject_id"] for r in await ctx.db.fetch(
+            "SELECT DISTINCT subject_id FROM decisions WHERE subject_kind = %s AND question_set = %s AND subject_id = ANY(%s)",
+            (PAIR_KIND, ctx.reg.question_set(QS_ALIGN).ref, ids))}
+        return {p: found[p] for p in ids if p not in decided}
+
     async def enumerate(self, ctx: Context) -> list[WorkItem]:
         ents = await self._entities(ctx)
-        found = await self.candidate_pairs(ctx, ents)
+        found = await self.undecided(ctx, await self.candidate_pairs(ctx, ents))
         contexts = await self._contexts(ctx, list(ents))
         ctx.cache["s5_entities"], ctx.cache["s5_pairs"] = ents, found
         items = []
@@ -203,7 +212,11 @@ class EntityStage(Stage):
         ents = ctx.cache.get("s5_entities") or await self._entities(ctx)
         accepted, known, dec_of = await self._pair_evidence(ctx, ents)
         identical = identical_pairs(ents, ctx.reg.policy("entity.normalization"))
-        outcome = merge(sorted(ents), accepted, known, identical)
+        new = await new_rows(ctx, self.name, "entities")
+        existing = {r["entity_id"]: r["merged_into"] or r["entity_id"] for r in await ctx.db.fetch(
+            "SELECT entity_id, merged_into FROM entities WHERE corpus_id = %s AND status = 'accepted'", (ctx.corpus_id,))
+            if r["entity_id"] in ents and r["entity_id"] not in new}
+        outcome = merge(sorted(ents), accepted, known, identical, existing)
         clusters = {r: m for r, m in outcome.clusters().items() if len(m) > 1}
         merge_item = self.item(ctx, f"merge{PAIR_SEP}{ctx.corpus_id}", sorted(dec_of.values()), outcome.refused, identical)
 
@@ -236,16 +249,23 @@ class EntityStage(Stage):
 
         await run_single_item(ctx, self, merge_item, merges_writer)
         for root, members in sorted(clusters.items()):
-            await self._canonical(ctx, ents, root, members)
+            await self._canonical(ctx, ents, root, members, new)
 
-    async def _canonical(self, ctx: Context, ents: dict[str, Any], root: str, members: list[str]) -> None:
+    async def _canonical(self, ctx: Context, ents: dict[str, Any], root: str, members: list[str], new: set[str]) -> None:
+        """A new cluster's name is a Jev Choice among its surface forms. A cluster already in the graph
+        keeps its name and attribute values; new members only add aliases and attributes."""
         forms = sorted({ents[m]["surface"] for m in members})
         item = self.item(ctx, f"{CLUSTER_KIND}{PAIR_SEP}{root}", members, forms)
+        kept = None if root in new else await ctx.db.fetchone(
+            "SELECT canonical_name, aliases FROM entities WHERE entity_id = %s", (root,))
+        order = sorted(members, key=lambda m: (m in new, m))
 
         async def factory():
             decision = None
             name = forms[0]
-            if len(forms) > 1:
+            if kept is not None:
+                name = kept["canonical_name"] or name
+            elif len(forms) > 1:
                 options = {short_key(f): f for f in forms}
                 r = await ctx.jev.ask(QS_CANONICAL, {"entity_type": ents[root]["entity_type"], "forms": forms},
                                       CLUSTER_KIND, root, dynamic={"forms": options})
@@ -255,16 +275,16 @@ class EntityStage(Stage):
 
             async def write(conn) -> str:
                 await write_decisions(conn, decision)
-                aliases = forms
+                aliases = sorted(set(forms) | set(kept["aliases"] or [])) if kept is not None else forms
                 await conn.execute("UPDATE entities SET canonical_name = %s, aliases = %s WHERE entity_id = %s", (name, aliases, root))
-                # The cluster keeps the union of its members' verified attributes; the first value
-                # in member order wins, so the result does not depend on merge order.
+                # The cluster keeps the union of its members' verified attributes; the first value in
+                # member order (existing members first, then by id) wins, so it does not depend on merge order.
                 await conn.execute(
                     "UPDATE entities SET attributes = (SELECT coalesce(jsonb_object_agg(k, v), '{}'::jsonb) FROM ("
                     "  SELECT DISTINCT ON (a.k) a.k, a.v FROM unnest(%s::text[]) WITH ORDINALITY m(id, n) "
                     "  JOIN entities e ON e.entity_id = m.id, jsonb_each(coalesce(e.attributes, '{}'::jsonb)) a(k, v) "
                     "  ORDER BY a.k, m.n) x) WHERE entity_id = %s",
-                    (sorted(members), root))
+                    (order, root))
                 return DONE
             return write
 

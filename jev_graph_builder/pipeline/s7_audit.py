@@ -26,7 +26,7 @@ from jev_graph_builder.ledger.ledger import DONE, WorkItem
 from jev_graph_builder.pipeline.citations import check_sentences
 from jev_graph_builder.pipeline.communities import partition as leiden_partition
 from jev_graph_builder.pipeline.common import (
-    REOPENED_STAGES, Context, Deps, RunOptions, RunReport, Stage, Writer, run_single_item, write_decisions,
+    REOPENED_STAGES, Context, Deps, RunOptions, RunReport, Stage, Writer, new_rows, run_single_item, write_decisions,
 )
 from jev_graph_builder.pipeline.s6_links import ANCHOR_PREFIX, relation_definitions
 from jev_graph_builder.store import repo
@@ -101,17 +101,21 @@ class AuditStage(Stage):
         return reasons
 
     async def enumerate(self, ctx: Context) -> list[WorkItem]:
+        """Anomalies are found over the whole graph, but only edges and orphans of new chunks are judged:
+        adding documents never demotes an edge that is already in the graph."""
         edges, doc_types = await self._graph(ctx)
+        new = await new_rows(ctx, self.name)
         reasons = self.anomalies(ctx, edges, doc_types)
         by_id = {e["edge_id"]: e for e in edges}
         items = [self.item(ctx, f"{EDGE_PREFIX}{eid}", by_id[eid]["decision_ids"], sorted(r),
-                           payload={"edge_id": eid, "reasons": sorted(r)}) for eid, r in sorted(reasons.items())]
+                           payload={"edge_id": eid, "reasons": sorted(r)}) for eid, r in sorted(reasons.items())
+                 if by_id[eid]["src_id"] in new or by_id[eid]["dst_id"] in new]
         linked = {n for e in edges if e["status"] == "accepted" for n in (e["src_id"], e["dst_id"])}
         orphans = await ctx.db.fetch(
             "SELECT chunk_id, text FROM chunks WHERE corpus_id = %s AND status = 'accepted' AND NOT coalesce(boilerplate, false) ORDER BY chunk_id",
             (ctx.corpus_id,))
         items.extend(self.item(ctx, f"{ORPHAN_PREFIX}{r['chunk_id']}", sha256_hex(r["text"]), payload={"chunk_id": r["chunk_id"]})
-                     for r in orphans if r["chunk_id"] not in linked)
+                     for r in orphans if r["chunk_id"] not in linked and r["chunk_id"] in new)
         return items
 
     # --------------------------------------------------------------- judging

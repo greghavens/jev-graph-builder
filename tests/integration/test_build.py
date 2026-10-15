@@ -265,6 +265,47 @@ async def test_a_changed_file_supersedes_the_old_versions_chunks(env: Harnessed,
     assert new_chunks > 0
 
 
+async def test_added_documents_link_to_existing_chunks_without_changing_existing_links(
+        env: Harnessed, docs: list[Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """New chunks are linked to existing chunks; existing links, entity clusters and names never change."""
+    monkeypatch.setenv(CONFIG_FILE_ENV, str(tmp_path / "jev-graph-builder.yaml"))
+    write_config(env.settings.model_dump(mode="json"))
+    env.fake_jev.overrides.update({("link_fanout", "related"): 0.75, ("link", "related"): 0.75, ("entity_align", "same_referent"): 0.9})
+    src = [str(docs[0].parent)]
+    held = tmp_path / "held"
+    held.mkdir()
+    later = docs[-4:]
+    for d in later:
+        d.rename(held / d.name)
+
+    first = await Builder(src, None, lambda _k, _s: True, "tester", open_ctx=_opener(env)).run()
+    assert first.ok, first.stopped
+    links = "SELECT * FROM edges WHERE NOT structural AND src_kind = 'chunk' AND dst_kind = 'chunk' ORDER BY edge_id"
+    entities = "SELECT entity_id, coalesce(merged_into, entity_id), canonical_name FROM entities WHERE status = 'accepted'"
+    with psycopg.connect(env.settings.dsn) as conn:
+        before = conn.execute(links).fetchall()
+        old_chunks = {r[0] for r in conn.execute("SELECT chunk_id FROM chunks")}
+        ents_before = {r[0]: r[1:] for r in conn.execute(entities)}
+    assert any(r for r in before), "the first build must have links to keep"
+
+    for d in later:
+        (held / d.name).rename(d)
+    second = await Builder(src, None, lambda _k, _s: True, "tester", open_ctx=_opener(env)).run()
+    assert second.ok, second.stopped
+
+    with psycopg.connect(env.settings.dsn) as conn:
+        after = conn.execute(links).fetchall()
+        cols = [c.name for c in conn.execute(links + " LIMIT 0").description]
+        ents_after = {r[0]: r[1:] for r in conn.execute(entities)}
+    assert {e: ents_after[e] for e in ents_before} == ents_before, "an existing entity changed cluster or name"
+    src_i, dst_i, status_i = cols.index("src_id"), cols.index("dst_id"), cols.index("status")
+    added = [r for r in after if r not in before]
+    assert [r for r in after if r[0] in {b[0] for b in before}] == before, "an existing link was rewritten"
+    assert all(r[src_i] not in old_chunks or r[dst_i] not in old_chunks for r in added), "a pair of existing chunks was re-decided"
+    assert any(r[status_i] == "accepted" and (r[src_i] in old_chunks) != (r[dst_i] in old_chunks) for r in added), \
+        "new chunks must link to existing chunks"
+
+
 class Killed(Exception):
     pass
 

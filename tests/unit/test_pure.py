@@ -18,7 +18,7 @@ from jev_graph_builder.pipeline.evolution import evolution_due, jev_accepted, si
 from jev_graph_builder.pipeline.ontology_checks import CheckReport, check_definitions
 from jev_graph_builder.pipeline.grounding import EXACT, FUZZY, NORMALIZED, UNGROUNDED, ground
 from jev_graph_builder.pipeline.segment_spans import runs, spans, split_gaps, split_section, starts_section
-from jev_graph_builder.pipeline.unionfind import JEV_SAID_DIFFERENT, merge
+from jev_graph_builder.pipeline.unionfind import JEV_SAID_DIFFERENT, JOINS_EXISTING, merge
 from jev_graph_builder.parse.parsers import ParsedUnit
 from jev_graph_builder.pipeline.s1_ingest import fit_text, split_long_units
 from jev_graph_builder.pipeline.s2_segment import SegmentStage, max_chunk_tokens, named_values, structural_role
@@ -91,6 +91,17 @@ def test_union_find_guardrail():
     assert out.find("b") == "a" and out.find("c") == "c"
     out2 = merge(nodes, [("a", "b", 0.99), ("c", "d", 0.98), ("b", "c", 0.9)], {})
     assert not out2.refused and len({out2.find(n) for n in nodes}) == 1   # Jev never said any two differ: one entity
+
+
+def test_new_entities_never_join_existing_clusters():
+    nodes = ["a", "b", "c", "m", "x"]                 # a, b, c already in the graph; m, x new
+    existing = {"b": "b", "c": "b", "a": "a"}         # existing clusters {b, c} and {a}
+    out = merge(nodes, [("a", "x", 0.99), ("x", "c", 0.98), ("m", "c", 0.97), ("b", "c", 0.96)], {}, existing=existing)
+    assert ("x", "c", JOINS_EXISTING) in out.refused  # x would bridge {a} and {b, c}
+    assert out.find("x") == "a"                       # x joined the first existing cluster it matched
+    assert out.find("c") == out.find("m") == "b"      # the existing root stays the root, though "a" < "b"
+    out2 = merge(["a", "z"], [("a", "z", 0.9)], {}, existing={"z": "z"})
+    assert out2.find("a") == "z"                      # a new entity never becomes an existing cluster's root
 
 
 def test_identical_names_merge_by_code_first():

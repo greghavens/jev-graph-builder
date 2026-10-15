@@ -179,6 +179,24 @@ async def ensure_corpus(ctx: Context) -> None:
         )
 
 
+_NEW_ROWS = {"chunks": "chunk_id", "entities": "entity_id"}
+
+
+async def new_rows(ctx: Context, stage: str, table: str = "chunks") -> set[str]:
+    """Accepted chunks (or entities) `stage` has not covered: a row is new until a run of `stage` that
+    started after its creation finished every item it selected. Stages that judge pairs or edges limit
+    themselves to these, so adding documents never re-decides what is already in the graph."""
+    key = _NEW_ROWS[table]
+    rows = await ctx.db.fetch(
+        "WITH cut AS (SELECT max(started_at) AS t FROM runs WHERE stage = %(s)s AND status = 'done' "
+        " AND (report->>'failed')::int = 0 AND (report->>'done')::int = (report->>'selected')::int) "
+        f"SELECT x.{key} AS id FROM {table} x LEFT JOIN runs r ON r.run_id = x.created_run_id "
+        "WHERE x.corpus_id = %(c)s AND x.status = 'accepted' "
+        "AND ((SELECT t FROM cut) IS NULL OR r.started_at IS NULL OR r.started_at >= (SELECT t FROM cut))",
+        {"s": stage, "c": ctx.corpus_id})
+    return {r["id"] for r in rows}
+
+
 async def write_decisions(conn: AsyncConnection, *results: AskResult | Decision | None) -> list[str]:
     """Insert decision rows; returns their IDs for provenance columns."""
     ids: list[str] = []

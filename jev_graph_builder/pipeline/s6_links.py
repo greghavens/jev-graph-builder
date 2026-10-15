@@ -26,7 +26,7 @@ from jev_graph_builder.jev.gating import ACCEPT, REJECT
 from jev_graph_builder.jev.service import AskResult, Decision
 from jev_graph_builder.ledger.ledger import DONE, WorkItem
 from jev_graph_builder.pipeline.common import (
-    Context, Deps, RunOptions, RunReport, Stage, Writer, write_decisions,
+    Context, Deps, RunOptions, RunReport, Stage, Writer, new_rows, write_decisions,
 )
 from jev_graph_builder.pipeline.evolution import maybe_evolve_ontology
 from jev_graph_builder.store import knn, repo
@@ -161,8 +161,18 @@ class LinkStage(Stage):
             out[r["chunk_id"]].append(r["text"])
         return out
 
+    async def undecided(self, ctx: Context, pairs: dict[tuple[str, str], set[str]]) -> dict[tuple[str, str], set[str]]:
+        """Only pairs with a new chunk and no decision yet: existing links are never re-decided."""
+        new = await new_rows(ctx, self.name)
+        new_list = sorted(new)
+        decided = {(min(r["src_id"], r["dst_id"]), max(r["src_id"], r["dst_id"])) for r in await ctx.db.fetch(
+            "SELECT src_id, dst_id FROM edges WHERE corpus_id = %s AND NOT structural AND src_kind = 'chunk' AND dst_kind = 'chunk' "
+            "AND (src_id = ANY(%s) OR dst_id = ANY(%s))",
+            (ctx.corpus_id, new_list, new_list))}
+        return {p: s for p, s in pairs.items() if (p[0] in new or p[1] in new) and p not in decided}
+
     async def enumerate(self, ctx: Context) -> list[WorkItem]:
-        pairs = await self.candidates(ctx)
+        pairs = await self.undecided(ctx, await self.candidates(ctx))
         by_anchor: dict[str, list[tuple[str, list[str]]]] = defaultdict(list)
         for (a, b), sources in sorted(pairs.items()):
             by_anchor[a].append((b, sorted(sources)))

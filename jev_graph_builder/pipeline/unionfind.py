@@ -32,6 +32,7 @@ class MergeOutcome:
 
 
 JEV_SAID_DIFFERENT = "jev_said_different"
+JOINS_EXISTING = "joins_existing_clusters"
 
 
 def merge(
@@ -39,20 +40,29 @@ def merge(
     pairs: list[tuple[str, str, float]],
     known: dict[frozenset[str], bool],
     identical: list[tuple[str, str]] = (),
+    existing: dict[str, str] | None = None,
 ) -> MergeOutcome:
     """Merge `identical` pairs first, then the pairs Jev accepted, most confident first; refuse a
     merge Jev contradicted.
 
     `known` holds Jev's decision (accepted or not) for every pair it judged, so a
     transitive merge is refused when Jev already said two of its members differ.
-    Roots are the lexicographically smallest member, so the result is deterministic.
+    `existing` maps each entity already in the graph to its cluster's root: new entities join
+    existing clusters, but two existing clusters are never joined, and a cluster that holds an
+    existing one keeps that root. Other roots are the lexicographically smallest member, so the
+    result is deterministic.
     """
+    existing = existing or {}
     out = MergeOutcome(parent={n: n for n in nodes})
     members: dict[str, list[str]] = {n: [n] for n in nodes}
+    held: dict[str, str | None] = {n: existing.get(n) for n in nodes}
     ordered = [*sorted(identical), *((a, b) for a, b, _p in sorted(pairs, key=lambda t: (-t[-1], t[0], t[1])))]
     for a, b in ordered:
         ra, rb = out.find(a), out.find(b)
         if ra == rb:
+            continue
+        if held[ra] and held[rb] and held[ra] != held[rb]:
+            out.refused.append((a, b, JOINS_EXISTING))
             continue
         ma, mb = members[ra], members[rb]
         if any(known.get(frozenset((x, y))) is False for x in ma for y in mb):
@@ -61,7 +71,14 @@ def merge(
         root, child = (ra, rb) if ra < rb else (rb, ra)
         out.parent[child] = root
         members[root] = sorted(members[root] + members.pop(child))
+        held[root] = held[ra] or held[rb]
         out.accepted.append((a, b))
+    for r, ms in members.items():
+        want = held[r]
+        if want and want != r and want in out.parent:
+            for m in ms:
+                out.parent[m] = want
+            out.parent[want] = want
     for n in nodes:
         out.find(n)
     return out
