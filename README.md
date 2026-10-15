@@ -23,17 +23,16 @@ At each step the coding agent or code proposes, and [Jev](https://typesafe.ai) (
 ## Quickstart
 
 ```bash
-git clone https://github.com/greghavens/jev-graph-builder
-cd jev-graph-builder
-python -m venv .venv && .venv/bin/pip install -e .
+pip install git+https://github.com/greghavens/jev-graph-builder
 
 export TYPESAFE_API_KEY=...        # your TypeSafe key
-.venv/bin/jev-graph-builder --harness claude_code build ./my-docs
+jev-graph-builder --harness claude_code build ./my-docs
 ```
 
 - `./my-docs` is your documents (see [Your documents](#your-documents)).
 - `--harness` is your coding agent: `claude_code`, `codex`, or `auto` (see [Coding agent](#coding-agent)).
 - With no database given, `build` starts a local pgvector container with podman or docker.
+- The first run copies a starter Registry (ontology, prompts, Jev question sets, policies) into `./registry`; S0 then adapts it to your documents.
 
 The run pauses once, early on: it shows the ontology it drafted from your documents (entity types, relation types and so on) and asks you to approve it. Answer no and it stops; running `build` again asks again. After you approve, it runs to the end. If it stops for any reason, run the same command again and it picks up where it left off.
 

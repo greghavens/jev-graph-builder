@@ -52,6 +52,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["jev_graph_builder"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"registry" = "jev_graph_builder/starter_registry"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

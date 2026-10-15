@@ -8,6 +8,7 @@ Secrets are read from the environment only (§17).
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from typing import Any, Literal
 
@@ -17,6 +18,9 @@ from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, Settings
 
 CONFIG_FILE_ENV = "JEV_GRAPH_BUILDER_CONFIG"
 DEFAULT_CONFIG_FILE = "jev-graph-builder.yaml"
+# The starter Registry: inside the installed package (wheel), or the repo's `registry/` in a source checkout.
+_PACKAGED_REGISTRY = Path(__file__).parent / "starter_registry"
+STARTER_REGISTRY = _PACKAGED_REGISTRY if _PACKAGED_REGISTRY.is_dir() else Path(__file__).parents[1] / "registry"
 
 HarnessChoice = Literal["claude_code", "codex", "auto"]
 
@@ -71,7 +75,11 @@ class Settings(BaseSettings):
         return (init_settings, env_settings, _YamlSource(settings_cls, path), file_secret_settings)
 
     def resolved_registry(self) -> Path:
-        return self.registry_path.resolve()
+        """The Registry directory; copied from the starter Registry the first time it is used."""
+        path = self.registry_path.resolve()
+        if not path.exists():
+            shutil.copytree(STARTER_REGISTRY, path)
+        return path
 
 
 SECRET_FILE = Path.home() / ".config" / "jev-graph-builder" / "env"
