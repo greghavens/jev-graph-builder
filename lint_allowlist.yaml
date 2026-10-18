@@ -17,7 +17,7 @@ contexts:
   - regex        # re.compile patterns (file-name formats)
   - help         # CLI help text
   - docstring
-sql_pattern: '^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|ALTER|DROP|GRANT|DO|SET|ON CONFLICT|FROM|WHERE|AND|OR|ORDER|GROUP|JOIN|LEFT JOIN|LIMIT|RETURNING|VALUES)\b|%s|%\(\w+\)s'
+sql_pattern: '^\s*(SELECT|COPY|INSERT|UPDATE|DELETE|WITH|CREATE|ALTER|DROP|GRANT|DO|SET|ON CONFLICT|FROM|WHERE|AND|OR|ORDER|GROUP|JOIN|LEFT JOIN|LIMIT|RETURNING|VALUES)\b|%s|%\(\w+\)s'
 identifier_pattern: '[a-z0-9_]+([./:][a-z0-9_{}]+)*'
 message_calls: [_fail]
 message_sinks: [errors, warnings, reasons]

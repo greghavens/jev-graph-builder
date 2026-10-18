@@ -473,5 +473,22 @@ def status() -> None:
     _echo(_run(go, migrate_db=False))
 
 
+
+@app.command()
+def publish(to: str = typer.Option(..., "--to", envvar="JGB_PUBLISH_DSN", show_envvar=True,
+                                   help="DSN of the database the hosted server reads (keep the password out of shell history: set JGB_PUBLISH_DSN)")) -> None:
+    """Copy the graph to the database a hosted query server reads: loaded into `<name>_next`, the MCP
+    sign-ins carried over, then swapped in; the database it replaces stays as `<name>_prev`."""
+    from jev_graph_builder.app import migration_params
+    from jev_graph_builder.store.publish import PublishError, publish as publish_graph
+
+    async def go(ctx: Context) -> Any:
+        return await publish_graph(ctx.db, migration_params(ctx.reg, ctx.settings), to)
+
+    try:
+        _echo(_run(go, migrate_db=False))
+    except PublishError as exc:
+        _fail(str(exc))
+
 if __name__ == "__main__":  # pragma: no cover
     sys.exit(app())

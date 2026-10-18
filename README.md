@@ -207,7 +207,7 @@ Web clients need the server on a public HTTPS address with OAuth sign-in. When `
    fly secrets set -a my-docs-db POSTGRES_PASSWORD=...
    fly deploy -c deploy/fly/db/fly.toml
    ```
-2. **Load the graph.** With `fly proxy 15432:5432 -a my-docs-db` running, copy your build database into it with `pg_dump` and `psql` (`--no-owner --no-privileges`).
+2. **Load the graph.** With `fly proxy 15432:5432 -a my-docs-db` running, run `jev-graph-builder publish` in your build directory, with the database's DSN in `JGB_PUBLISH_DSN` (e.g. `postgresql://postgres:<password>@127.0.0.1:15432/jev_graph_builder`). It loads the graph into `jev_graph_builder_next`, carries over the server's sign-ins, then swaps it in; the database it replaces stays as `jev_graph_builder_prev`. Run it again whenever the graph changes.
 3. **GitHub OAuth app.** At [github.com/settings/applications/new](https://github.com/settings/applications/new), set the homepage to `MCP_PUBLIC_URL` and the callback URL to `MCP_PUBLIC_URL` + `/github/callback`. Leave wildcard redirects and device flow off. Generate a client secret.
 4. **Server.** Copy your build directory's `registry/` to `deploy/fly/mcp/registry/` (it is git-ignored), set the secrets and deploy:
    ```bash

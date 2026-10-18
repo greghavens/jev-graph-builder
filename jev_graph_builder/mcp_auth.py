@@ -56,7 +56,7 @@ class GitHubOAuth:
     """`OAuthAuthorizationServerProvider` that signs people in with GitHub."""
 
     def __init__(self, dsn: str, public_url: str, client_id: str, client_secret: str, allowed: set[str]) -> None:
-        self.pool = AsyncConnectionPool(dsn, min_size=1, max_size=4, open=False)
+        self.pool = AsyncConnectionPool(dsn, min_size=1, max_size=4, open=False, check=AsyncConnectionPool.check_connection)
         self.public_url = public_url.rstrip("/")
         self.client_id, self.client_secret, self.allowed = client_id, client_secret, allowed
 

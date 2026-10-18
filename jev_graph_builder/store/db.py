@@ -17,7 +17,8 @@ class Database:
     def __init__(self, dsn: str, min_size: int, max_size: int) -> None:
         self.dsn = dsn
         self._pool = AsyncConnectionPool(
-            dsn, min_size=min_size, max_size=max_size, open=False, configure=self._configure, kwargs={"row_factory": dict_row}
+            dsn, min_size=min_size, max_size=max_size, open=False, configure=self._configure, kwargs={"row_factory": dict_row},
+            check=AsyncConnectionPool.check_connection,  # a connection the server closed (e.g. `publish` swapping databases) is replaced, not handed out
         )
 
     @staticmethod
@@ -40,7 +41,7 @@ class Database:
         await self._pool.close()
         self._pool = AsyncConnectionPool(
             self.dsn, min_size=self._pool.min_size, max_size=self._pool.max_size, open=False,
-            configure=self._configure, kwargs={"row_factory": dict_row},
+            configure=self._configure, kwargs={"row_factory": dict_row}, check=AsyncConnectionPool.check_connection,
         )
         await self.open()
 
