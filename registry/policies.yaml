@@ -394,6 +394,10 @@ retrieval_plans:
 
 # `publish --target cloudflare`
 publish:
+  postgres:
+    # maintenance_work_mem while publish builds the target's indexes; the vector index builds in minutes when it
+    # fits in memory, hours when it does not. Keep it under the target machine's RAM.
+    index_memory: 1GB
   cloudflare:
     serving_embedding: bge_small      # embedding profile the chunks and questions are embedded with
     sql_file_bytes: 50000000          # D1 import files

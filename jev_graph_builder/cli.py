@@ -495,7 +495,7 @@ def publish(target: str = typer.Option("postgres", "--target", help="postgres | 
 
         if not to:
             _fail("--target postgres needs --to (or $JGB_PUBLISH_DSN)")
-        return await to_postgres(ctx.db, migration_params(ctx.reg, ctx.settings), to)
+        return await to_postgres(ctx.db, migration_params(ctx.reg, ctx.settings), to, ctx.reg.policy("publish.postgres.index_memory"))
 
     from jev_graph_builder.cloudflare.publish import CloudflareError
     from jev_graph_builder.store.publish import PublishError

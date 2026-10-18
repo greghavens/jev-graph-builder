@@ -85,7 +85,7 @@ async def _secondary_indexes(conn: psycopg.AsyncConnection, tables: list[str]) -
     return dict(await cur.fetchall())
 
 
-async def _load(source: Database, params: dict[str, Any], next_dsn: str) -> dict[str, int]:
+async def _load(source: Database, params: dict[str, Any], next_dsn: str, index_memory: str | None) -> dict[str, int]:
     """Resumable: a table already loaded from the same number of source rows is not loaded again, and only
     missing indexes are built (each one is kept as soon as it is built)."""
     target = Database(next_dsn, 1, 1)
@@ -121,6 +121,8 @@ async def _load(source: Database, params: dict[str, Any], next_dsn: str) -> dict
             if t in todo:
                 done[t] = await _copy(source, dst, t, wheres[t])
         built = await _secondary_indexes(dst, list(wheres))
+        if index_memory:  # the vector index is built in memory when it fits: minutes instead of hours
+            await dst.execute(sql.SQL("SET maintenance_work_mem = {}").format(sql.Literal(index_memory)))
         for name, definition in indexes.items():
             if name not in built:
                 await dst.execute(definition)
@@ -164,7 +166,9 @@ async def _swap(admin: psycopg.AsyncConnection, name: str, nxt: str, prev: str, 
     await admin.execute(sql.SQL("ALTER DATABASE {} RENAME TO {}").format(sql.Identifier(nxt), sql.Identifier(name)))
 
 
-async def publish(source: Database, params: dict[str, Any], to: str, maintenance_db: str = "postgres") -> dict[str, Any]:
+async def publish(source: Database, params: dict[str, Any], to: str, index_memory: str | None = None,
+                  maintenance_db: str = "postgres") -> dict[str, Any]:
+    """`index_memory`: `maintenance_work_mem` for building the indexes on the target (policy publish.postgres.index_memory)."""
     conninfo = conninfo_to_dict(to)
     name = conninfo.get("dbname")
     if not name:
@@ -176,7 +180,7 @@ async def publish(source: Database, params: dict[str, Any], to: str, maintenance
         if not await _exists(admin, nxt):  # an earlier, interrupted publish is resumed
             await admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(nxt)))
     next_dsn = _dsn(conninfo, nxt)
-    counts = await _load(source, params, next_dsn)
+    counts = await _load(source, params, next_dsn, index_memory)
     sign_ins = await _carry_sign_ins(_dsn(conninfo, name), next_dsn) if replace else 0
     async with await psycopg.AsyncConnection.connect(admin_dsn, autocommit=True) as admin:
         await _swap(admin, name, nxt, prev, replace)
