@@ -475,19 +475,36 @@ def status() -> None:
 
 
 @app.command()
-def publish(to: str = typer.Option(..., "--to", envvar="JGB_PUBLISH_DSN", show_envvar=True,
-                                   help="DSN of the database the hosted server reads (keep the password out of shell history: set JGB_PUBLISH_DSN)")) -> None:
-    """Copy the graph to the database a hosted query server reads: loaded into `<name>_next`, the MCP
-    sign-ins carried over, then swapped in; the database it replaces stays as `<name>_prev`."""
+def publish(target: str = typer.Option("postgres", "--target", help="postgres | cloudflare"),
+            to: Optional[str] = typer.Option(None, "--to", envvar="JGB_PUBLISH_DSN", show_envvar=True,
+                                             help="postgres: DSN of the database the hosted server reads (keep the password out of shell history: set JGB_PUBLISH_DSN)"),
+            name: Optional[str] = typer.Option(None, "--name", help="cloudflare: Worker name (default: mcp_name setting)"),
+            allow_github_users: Optional[str] = typer.Option(None, "--allow-github-users",
+                                                             help="cloudflare: comma-separated GitHub logins allowed to sign in (default: $MCP_ALLOWED_GITHUB_USERS)")) -> None:
+    """Copy the graph to where a hosted query server reads it. postgres: loaded into `<name>_next`, the MCP sign-ins
+    carried over, then swapped in; the database it replaces stays as `<name>_prev`. cloudflare: a new D1 database and
+    Vectorize index, then the Worker is deployed pointing at them; the previous ones are kept. Both resume when rerun."""
     from jev_graph_builder.app import migration_params
-    from jev_graph_builder.store.publish import PublishError, publish as publish_graph
 
     async def go(ctx: Context) -> Any:
-        return await publish_graph(ctx.db, migration_params(ctx.reg, ctx.settings), to)
+        if target == "cloudflare":
+            from jev_graph_builder.cloudflare.publish import publish as to_cloudflare
 
+            return await to_cloudflare(ctx, name or ctx.settings.mcp_name, allow_github_users)
+        from jev_graph_builder.store.publish import publish as to_postgres
+
+        if not to:
+            _fail("--target postgres needs --to (or $JGB_PUBLISH_DSN)")
+        return await to_postgres(ctx.db, migration_params(ctx.reg, ctx.settings), to)
+
+    from jev_graph_builder.cloudflare.publish import CloudflareError
+    from jev_graph_builder.store.publish import PublishError
+
+    if target not in ("postgres", "cloudflare"):
+        _fail(f"--target {target!r} needs to be postgres or cloudflare")
     try:
         _echo(_run(go, migrate_db=False))
-    except PublishError as exc:
+    except (PublishError, CloudflareError) as exc:
         _fail(str(exc))
 
 if __name__ == "__main__":  # pragma: no cover

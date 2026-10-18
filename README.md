@@ -223,6 +223,22 @@ Web clients need the server on a public HTTPS address with OAuth sign-in. When `
 
    Both send you to GitHub to sign in.
 
+### On Cloudflare
+
+`publish --target cloudflare` serves the graph from a Cloudflare Worker instead: no server to keep running, and it costs the $5 a month of the Workers Paid plan for a graph of this size. Run it in your build directory, with [wrangler](https://developers.cloudflare.com/workers/wrangler/) logged in (`npx wrangler login`) and npm installed:
+
+```bash
+jev-graph-builder publish --target cloudflare --name my-docs-mcp --allow-github-users your-login
+```
+
+It loads the graph into a new D1 database (chunks with full-text search, accepted edges, communities) and a new Vectorize index (the chunks embedded with the `bge_small` profile, which Workers AI runs for each question), then deploys the Worker pointing at them. The previous database and index are kept. Rerun it whenever the graph changes; an interrupted run resumes.
+
+Then, once:
+
+1. **GitHub OAuth app** with the callback URL `publish` prints (`https://my-docs-mcp.<your-subdomain>.workers.dev/callback`).
+2. **Secrets**, in your own terminal: `npx wrangler secret put GITHUB_CLIENT_ID --name my-docs-mcp`, the same for `GITHUB_CLIENT_SECRET`, and `SYSTEM_ONE_KEY` (your TypeSafe key, or the key of the System One service you build with; not needed for Clef, which the Worker calls through Workers AI).
+3. **Connect** claude.ai or ChatGPT to the `mcp_url` `publish` prints, as above.
+
 ## Training data
 
 After the build, `train` turns the knowledge in the graph into training data for a model that has to learn it. Each example records the Jev decisions that accepted it.

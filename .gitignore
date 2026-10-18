@@ -9,3 +9,8 @@ __pycache__/
 dist/
 build/
 deploy/fly/mcp/registry/
+jev_graph_builder/cloudflare/worker/node_modules/
+jev_graph_builder/cloudflare/worker/src/bundle.json
+jev_graph_builder/cloudflare/worker/wrangler.json
+jev_graph_builder/cloudflare/worker/.wrangler/
+.wrangler/

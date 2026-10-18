@@ -391,3 +391,11 @@ retrieval_plans:
   compare: {k_seeds: 8, max_hops: 1, max_neighbors: 4, relations: [same_subject, contradicts, supersedes], use_communities: false}
   global_summary: {k_seeds: 10, max_hops: 1, max_neighbors: 4, relations: [same_subject, elaborates], use_communities: true}
   out_of_scope: {k_seeds: 0, max_hops: 0, max_neighbors: 0, relations: [], use_communities: false, out_of_scope: true}
+
+# `publish --target cloudflare`
+publish:
+  cloudflare:
+    serving_embedding: bge_small      # embedding profile the chunks and questions are embedded with
+    sql_file_bytes: 50000000          # D1 import files
+    vectors_per_file: 5000            # embedded per file, each file upserted once
+    vector_batch: 1000                # vectors per Vectorize upsert request

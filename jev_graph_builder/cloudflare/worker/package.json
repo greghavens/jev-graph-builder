@@ -1,0 +1,20 @@
+{
+  "name": "jev-graph-builder-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "1.2.3",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261018.1",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7",
+    "wrangler": "4.151.1"
+  }
+}

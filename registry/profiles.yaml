@@ -168,6 +168,17 @@ embedding:
     max_tokens: 256
     batch_size: 64
     normalize: true
+  # Serving only (`publish --target cloudflare`): the Worker embeds questions with Workers AI's copy of this
+  # model, CLS pooling, which gives the same vectors as the model run here.
+  bge_small:
+    kind: sentence_transformers
+    model_id: BAAI/bge-small-en-v1.5
+    dim: 384
+    max_tokens: 512
+    batch_size: 256
+    normalize: true
+    workers_ai_model: "@cf/baai/bge-small-en-v1.5"
+    workers_ai_pooling: cls
   openai_compatible:
     kind: openai_compatible
     endpoint: https://api.openai.com/v1/embeddings
