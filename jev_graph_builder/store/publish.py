@@ -101,6 +101,11 @@ async def _load(source: Database, params: dict[str, Any], next_dsn: str, index_m
         await dst.execute(f"CREATE TABLE IF NOT EXISTS {PROGRESS_TABLE} (table_name text PRIMARY KEY, source_rows bigint NOT NULL)")
         cur = await dst.execute(f"SELECT table_name, source_rows FROM {PROGRESS_TABLE}")
         done = dict(await cur.fetchall())
+        if not done:  # a database loaded before progress was recorded: each table went in as one COPY, all or nothing
+            for t in wheres:
+                cur = await dst.execute(sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(t)))
+                if rows := (await cur.fetchone())[0]:
+                    done[t] = rows
         todo = {t for t, where in wheres.items() if done.get(t) != await _source_rows(source, t, where)}
         # A table referencing one that is reloaded is reloaded too: they are emptied together.
         cur = await dst.cursor(row_factory=tuple_row).execute(
@@ -123,6 +128,8 @@ async def _load(source: Database, params: dict[str, Any], next_dsn: str, index_m
         built = await _secondary_indexes(dst, list(wheres))
         if index_memory:  # the vector index is built in memory when it fits: minutes instead of hours
             await dst.execute(sql.SQL("SET maintenance_work_mem = {}").format(sql.Literal(index_memory)))
+            # One process: parallel builds put that memory in shared memory (/dev/shm), which containers keep small.
+            await dst.execute("SET max_parallel_maintenance_workers = 0")
         for name, definition in indexes.items():
             if name not in built:
                 await dst.execute(definition)
