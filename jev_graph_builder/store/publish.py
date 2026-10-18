@@ -23,6 +23,8 @@ from jev_graph_builder.store.db import Database
 TABLES = ("registry_versions", "corpora", "documents", "chunks", "units", "communities")
 EDGES = "edges"
 OAUTH_TABLE = "mcp_oauth"
+# In `<name>_next`: the tables loaded so far and from how many source rows, so a rerun resumes.
+PROGRESS_TABLE = "jgb_publish_progress"
 
 
 class PublishError(Exception):
@@ -47,7 +49,8 @@ async def _columns(conn: psycopg.AsyncConnection, table: str) -> list[str]:
 
 
 async def _copy(source: Database, dst: psycopg.AsyncConnection, table: str, where: str = "") -> int:
-    """Stream one table from the build database into `dst` (binary COPY: both sides run the same migrations)."""
+    """Stream one table from the build database into the (empty) table in `dst` (binary COPY: both sides run the
+    same migrations). Loaded and recorded in PROGRESS_TABLE in one transaction, so it is either done or not."""
     async with source.tx() as src:
         cols = await _columns(src, table)
         missing = set(cols) - set(await _columns(dst, table))
@@ -56,36 +59,74 @@ async def _copy(source: Database, dst: psycopg.AsyncConnection, table: str, wher
         names = sql.SQL(", ").join(map(sql.Identifier, cols))
         out = sql.SQL("COPY (SELECT {} FROM {} {}) TO STDOUT (FORMAT BINARY)").format(names, sql.Identifier(table), sql.SQL(where))
         into = sql.SQL("COPY {} ({}) FROM STDIN (FORMAT BINARY)").format(sql.Identifier(table), names)
-        async with src.cursor().copy(out) as reader, dst.cursor().copy(into) as writer:
-            async for block in reader:
-                await writer.write(block)
-    cur = await dst.execute(sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table)))
-    return (await cur.fetchone())[0]
+        async with dst.transaction():
+            async with src.cursor().copy(out) as reader, dst.cursor().copy(into) as writer:
+                async for block in reader:
+                    await writer.write(block)
+            cur = await dst.execute(sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table)))
+            rows = (await cur.fetchone())[0]
+            await dst.execute(f"INSERT INTO {PROGRESS_TABLE} (table_name, source_rows) VALUES (%s, %s) "
+                              "ON CONFLICT (table_name) DO UPDATE SET source_rows = EXCLUDED.source_rows", (table, rows))
+    return rows
+
+
+async def _source_rows(source: Database, table: str, where: str) -> int:
+    row = await source.fetchone(f"SELECT count(*) AS n FROM {table} {where}")
+    return int(row["n"])
+
+
+async def _secondary_indexes(conn: psycopg.AsyncConnection, tables: list[str]) -> dict[str, str]:
+    """Index name -> definition for the tables' indexes that do not back a constraint."""
+    cur = await conn.cursor(row_factory=tuple_row).execute(
+        "SELECT i.indexname, i.indexdef FROM pg_indexes i "
+        "WHERE i.schemaname = current_schema() AND i.tablename = ANY(%s) AND NOT EXISTS ("
+        "  SELECT 1 FROM pg_constraint c WHERE c.conname = i.indexname AND c.conrelid = (i.schemaname || '.' || i.tablename)::regclass)",
+        (tables,))
+    return dict(await cur.fetchall())
 
 
 async def _load(source: Database, params: dict[str, Any], next_dsn: str) -> dict[str, int]:
+    """Resumable: a table already loaded from the same number of source rows is not loaded again, and only
+    missing indexes are built (each one is kept as soon as it is built)."""
     target = Database(next_dsn, 1, 1)
     await target.open()
     try:
         await migrate.migrate(target, params)
     finally:
         await target.close()
+    wheres = {**{t: "" for t in TABLES}, EDGES: "WHERE status = 'accepted'"}
+    async with source.tx() as src:
+        indexes = await _secondary_indexes(src, list(wheres))
     async with await psycopg.AsyncConnection.connect(next_dsn, autocommit=True) as dst:
-        # Secondary indexes are built once after the load instead of row by row during it.
-        cur = await dst.execute(
-            "SELECT i.indexname, i.indexdef FROM pg_indexes i "
-            "WHERE i.schemaname = current_schema() AND i.tablename = ANY(%s) AND NOT EXISTS ("
-            "  SELECT 1 FROM pg_constraint c WHERE c.conname = i.indexname AND c.conrelid = (i.schemaname || '.' || i.tablename)::regclass)",
-            (list(TABLES) + [EDGES],))
-        indexes = await cur.fetchall()
-        for name, _ in indexes:
+        await dst.execute(f"CREATE TABLE IF NOT EXISTS {PROGRESS_TABLE} (table_name text PRIMARY KEY, source_rows bigint NOT NULL)")
+        cur = await dst.execute(f"SELECT table_name, source_rows FROM {PROGRESS_TABLE}")
+        done = dict(await cur.fetchall())
+        todo = {t for t, where in wheres.items() if done.get(t) != await _source_rows(source, t, where)}
+        # A table referencing one that is reloaded is reloaded too: they are emptied together.
+        cur = await dst.cursor(row_factory=tuple_row).execute(
+            "SELECT conrelid::regclass::text, confrelid::regclass::text FROM pg_constraint WHERE contype = 'f'")
+        references = await cur.fetchall()
+        emptied = set(todo)  # with the tables not published that reference them (empty here)
+        while grown := {child for child, parent in references if parent in emptied} - emptied:
+            emptied |= grown
+        todo = emptied & set(wheres)
+        if todo:
+            await dst.execute(sql.SQL("TRUNCATE {}").format(sql.SQL(", ").join(map(sql.Identifier, sorted(emptied)))))
+            await dst.execute(f"DELETE FROM {PROGRESS_TABLE} WHERE table_name = ANY(%s)", (sorted(todo),))
+        # Secondary indexes of the tables still to load are built once after the load, not row by row during it.
+        present = await _secondary_indexes(dst, sorted(todo))
+        for name in present:
             await dst.execute(sql.SQL("DROP INDEX {}").format(sql.Identifier(name)))
-        counts = {t: await _copy(source, dst, t) for t in TABLES}
-        counts[EDGES] = await _copy(source, dst, EDGES, "WHERE status = 'accepted'")
-        for _, definition in indexes:
-            await dst.execute(definition)
-        await dst.execute("ANALYZE")
-    return counts
+        for t in wheres:  # in TABLES order: a referenced table is loaded before the tables referencing it
+            if t in todo:
+                done[t] = await _copy(source, dst, t, wheres[t])
+        built = await _secondary_indexes(dst, list(wheres))
+        for name, definition in indexes.items():
+            if name not in built:
+                await dst.execute(definition)
+        if todo:
+            await dst.execute("ANALYZE")
+    return {t: done[t] for t in wheres}
 
 
 async def _carry_sign_ins(current_dsn: str, next_dsn: str) -> int:
@@ -98,9 +139,11 @@ async def _carry_sign_ins(current_dsn: str, next_dsn: str) -> int:
         await dst.execute(OAUTH_SCHEMA)
         out = sql.SQL("COPY {} TO STDOUT (FORMAT BINARY)").format(sql.Identifier(OAUTH_TABLE))
         into = sql.SQL("COPY {} FROM STDIN (FORMAT BINARY)").format(sql.Identifier(OAUTH_TABLE))
-        async with cur_db.cursor().copy(out) as reader, dst.cursor().copy(into) as writer:
-            async for block in reader:
-                await writer.write(block)
+        async with dst.transaction():  # taken fresh each time: sign-ins change while the graph loads
+            await dst.execute(sql.SQL("TRUNCATE {}").format(sql.Identifier(OAUTH_TABLE)))
+            async with cur_db.cursor().copy(out) as reader, dst.cursor().copy(into) as writer:
+                async for block in reader:
+                    await writer.write(block)
         cur = await dst.execute(sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(OAUTH_TABLE)))
         return (await cur.fetchone())[0]
 
@@ -130,8 +173,8 @@ async def publish(source: Database, params: dict[str, Any], to: str, maintenance
     admin_dsn = _dsn(conninfo, maintenance_db)
     async with await psycopg.AsyncConnection.connect(admin_dsn, autocommit=True) as admin:
         replace = await _exists(admin, name)
-        await admin.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(nxt)))
-        await admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(nxt)))
+        if not await _exists(admin, nxt):  # an earlier, interrupted publish is resumed
+            await admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(nxt)))
     next_dsn = _dsn(conninfo, nxt)
     counts = await _load(source, params, next_dsn)
     sign_ins = await _carry_sign_ins(_dsn(conninfo, name), next_dsn) if replace else 0

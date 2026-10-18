@@ -59,3 +59,46 @@ async def test_publish_swaps_in_the_graph_and_keeps_sign_ins_and_the_previous_co
         with psycopg.connect(server_dsn, autocommit=True) as conn:
             for db in (name, f"{name}_prev", f"{name}_next"):
                 conn.execute(f'DROP DATABASE IF EXISTS "{db}" WITH (FORCE)')
+
+
+async def test_an_interrupted_publish_resumes_without_reloading_finished_tables(
+        env: Harnessed, docs: list[Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, server_dsn: str) -> None:
+    from jev_graph_builder.store import publish as pub
+
+    monkeypatch.setenv(CONFIG_FILE_ENV, str(tmp_path / "jev-graph-builder.yaml"))
+    write_config(env.settings.model_dump(mode="json"))
+    env.fake_jev.overrides.update({("link_fanout", "related"): 0.75, ("link", "related"): 0.75})
+    built = await Builder([str(docs[0].parent)], None, lambda _k, _s: True, "tester", open_ctx=_opener(env)).run()
+    assert built.ok, built.stopped
+    name = "jgb_pub_" + uuid.uuid4().hex[:8]
+    to = make_conninfo(**{**conninfo_to_dict(server_dsn), "dbname": name})
+    real_copy, copied = pub._copy, []
+
+    async def killed_at_chunks(source, dst, table, where=""):
+        if table == "chunks":
+            raise RuntimeError("killed")
+        copied.append(table)
+        return await real_copy(source, dst, table, where)
+
+    try:
+        monkeypatch.setattr(pub, "_copy", killed_at_chunks)
+        async with _opener(env)(env.settings, None) as ctx:
+            with pytest.raises(RuntimeError, match="killed"):
+                await publish(ctx.db, migration_params(ctx.reg, ctx.settings), to)
+        finished = list(copied)
+        assert finished and "chunks" not in finished
+
+        copied.clear()
+        monkeypatch.setattr(pub, "_copy", lambda *a, **k: (copied.append(a[2]), real_copy(*a, **k))[1])
+        async with _opener(env)(env.settings, None) as ctx:
+            done = await publish(ctx.db, migration_params(ctx.reg, ctx.settings), to)
+        assert not set(copied) & set(finished), "a finished table was loaded again"
+        assert "chunks" in copied
+        with psycopg.connect(env.settings.dsn) as conn:
+            assert done["rows"]["chunks"] == conn.execute("SELECT count(*) FROM chunks").fetchone()[0]
+        with psycopg.connect(to) as conn:
+            assert conn.execute("SELECT count(*) FROM pg_indexes WHERE indexname = 'chunks_embedding_hnsw'").fetchone()[0] == 1
+    finally:
+        with psycopg.connect(server_dsn, autocommit=True) as conn:
+            for db in (name, f"{name}_prev", f"{name}_next"):
+                conn.execute(f'DROP DATABASE IF EXISTS "{db}" WITH (FORCE)')
