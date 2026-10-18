@@ -39,7 +39,7 @@ The run pauses once, early on: it shows the ontology it drafted from your docume
 ## Requirements
 
 - Python 3.11 or later
-- A TypeSafe API key, in `TYPESAFE_API_KEY`
+- A TypeSafe API key, in `TYPESAFE_API_KEY`. Any other System One service works too: add a `jev` profile with its endpoint and key in `registry/profiles.yaml` and select it with `profiles.jev`. The starter Registry has one for Cloudflare Workers AI's Clef (`workers_ai_clef`, with `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`).
 - A coding agent CLI, installed and logged in: [Claude Code](https://claude.com/claude-code) (`claude`) and/or [Codex](https://github.com/openai/codex) (`codex`)
 - Either podman or docker (for the automatic database), or your own PostgreSQL 16 with the pgvector extension
 - Optional: Tesseract, for scanned PDFs

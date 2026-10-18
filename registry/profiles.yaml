@@ -14,6 +14,23 @@ jev:
     rate: {requests_per_minute: 1200, tokens_per_second: 250000}
     chars_per_token: 4
     timeout_s: 60
+  # Any other System One service: `kind: gateway` with its endpoint, key and field names. This one is
+  # Cloudflare Workers AI's Clef; select it with `profiles.jev: workers_ai_clef`. Its probabilities are
+  # not Jev's, so check the thresholds (`jev-graph-builder qs report`) before building with it.
+  workers_ai_clef:
+    kind: gateway
+    endpoint: https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/cloudflare/clef
+    model: clef                       # or clef-flash
+    key_env: CLOUDFLARE_API_TOKEN     # a token with Workers AI read permission
+    field_map: {model: model, state: state, questions: questions, answers: answers}
+    response_root: result
+    max_questions: 64
+    context_tokens: 65536
+    longest_question_tokens: 32000
+    limits: {choice_max_options: 255, score_min_levels: 2, score_max_levels: 10}
+    rate: {requests_per_minute: 300, tokens_per_second: 100000}
+    chars_per_token: 4
+    timeout_s: 60
 
 harness:
   # Batch jobs: read input.jsonl, write output.jsonl inside the workspace. No shell, no network tools.

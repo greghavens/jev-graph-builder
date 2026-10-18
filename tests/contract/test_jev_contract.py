@@ -134,6 +134,25 @@ async def test_gateway_field_map(reg: Registry) -> None:
     assert raw.answers == CASSETTE["response"]["answers"]
 
 
+async def test_gateway_reads_a_wrapped_response_from_an_endpoint_with_variables(reg: Registry, monkeypatch) -> None:
+    """Workers AI (Clef): the account ID comes from the environment and the answers sit under `result`."""
+    monkeypatch.setenv("JGB_TEST_ACCOUNT", "acct123")
+    profile = {**_profile(reg), "name": "clef", "model": "clef", "response_root": "result",
+               "endpoint": "https://api.example/accounts/${JGB_TEST_ACCOUNT}/ai/run/@cf/cloudflare/clef",
+               "field_map": {"model": "model", "state": "state", "questions": "questions", "answers": "answers"}}
+    urls: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(str(request.url))
+        return httpx.Response(200, json={"success": True, "result": {"answers": CASSETTE["response"]["answers"], "model": "clef"}})
+
+    prov = GatewayProvider(profile, reg.policies, transport=httpx.MockTransport(handler))
+    raw = await prov.call({"x": {"t": "a"}}, CASSETTE["request"]["questions"])
+    await prov.aclose()
+    assert urls == ["https://api.example/accounts/acct123/ai/run/@cf/cloudflare/clef"]
+    assert raw.answers == CASSETTE["response"]["answers"] and raw.model == "clef"
+
+
 async def test_identical_calls_in_flight_pay_once(reg: Registry) -> None:
     """Identical requests asked concurrently (e.g. the same link between two copies of a document) share one paid call."""
     prov = TypeSafeProvider(_profile(reg), reg.policies, transport=_replay())

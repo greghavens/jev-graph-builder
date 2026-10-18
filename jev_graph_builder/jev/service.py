@@ -240,7 +240,7 @@ class JevService:
             size = est.value({key: q})
             if size > longest or size > room:
                 raise JevRequestError(f"question {key} needs {size} tokens, over the per-question limit")
-            if current and used + size > room:
+            if current and (used + size > room or len(current) == self.profile.get("max_questions", len(wire))):
                 batches.append(current)
                 current, used = {}, 0
             current[key] = q

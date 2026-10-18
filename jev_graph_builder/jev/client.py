@@ -15,6 +15,7 @@ and policies; nothing is left at library defaults.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -173,6 +174,17 @@ class TypeSafeProvider:
         await self._client.aclose()
 
 
+def _expand(endpoint: str) -> str:
+    """`${NAME}` in an endpoint (e.g. an account ID) is read like a key: the secret file, else the environment."""
+    def value(m: re.Match[str]) -> str:
+        v = secret(m.group(1))
+        if v is None:
+            raise JevRequestError(f"endpoint needs ${m.group(1)}")
+        return v
+
+    return re.sub(r"\$\{(\w+)\}", value, endpoint)
+
+
 class GatewayProvider:
     """Third-party gateway with its own model IDs and field names (R-011)."""
 
@@ -189,6 +201,7 @@ class GatewayProvider:
         headers = {profile.get("auth_header", "Authorization"): f"{profile.get('auth_scheme', 'Bearer')} {key}"} if key else {}
         self._http = httpx.AsyncClient(timeout=profile["timeout_s"], headers=headers, transport=transport)
         self._retries = policies["jev"]["retry"]
+        self.endpoint = _expand(profile["endpoint"])
 
     async def call(self, state: Any, questions: dict[str, dict]) -> RawResult:
         f = self.fields
@@ -197,7 +210,7 @@ class GatewayProvider:
         attempt = 0
         while True:
             try:
-                resp = await self._http.post(self.profile["endpoint"], json=body)
+                resp = await self._http.post(self.endpoint, json=body)
             except httpx.HTTPError as exc:
                 raise JevUnavailable(str(exc)) from exc
             if resp.status_code in THROTTLE_STATUSES:
@@ -216,6 +229,8 @@ class GatewayProvider:
         if resp.status_code >= 400:
             raise JevRequestError(f"gateway {resp.status_code}: {resp.text[:500]}")
         data = resp.json()
+        if self.profile.get("response_root"):  # e.g. Workers AI wraps the System One response in `result`
+            data = data[self.profile["response_root"]]
         return RawResult(
             answers=data[f["answers"]],
             model=data.get(f.get("response_model", "model"), self.model),
