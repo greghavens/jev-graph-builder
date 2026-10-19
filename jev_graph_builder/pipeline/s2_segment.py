@@ -73,9 +73,20 @@ def _tokens(text: str) -> str:
 
 def named_values(text: str, values: list[str]) -> list[str]:
     """The values `text` names word for word (case-insensitive): a value's tokens appear in order as
-    whole tokens, where a dotted token is one ("9.0" is named by "VCF 9.0." but not by "9.0.1" or "19.0")."""
-    t = f" {_tokens(text)} "
-    return [v for v in values if (k := _tokens(v)) and f" {k} " in t]
+    whole tokens, where a dotted token is one ("9.0" is named by "VCF 9.0." but not by "19.0"). A dotted
+    token no value equals names the most specific value it extends at a dot ("9.1.1.0" names "9.1"
+    when the corpus knows no 9.1.1), so a newer release than the corpus knows gets its nearest one."""
+    toks = _tokens(text)
+    t = f" {toks} "
+    keys = {v: _tokens(v) for v in values}
+    named = {v for v, k in keys.items() if k and f" {k} " in t}
+    dotted = {v: k for v, k in keys.items() if "." in k and " " not in k}
+    exact = set(dotted.values())
+    for tok in set(toks.split()) - exact:
+        extended = [v for v, k in dotted.items() if tok.startswith(k + ".")]
+        if extended:
+            named.add(max(extended, key=lambda v: len(dotted[v])))
+    return [v for v in values if v in named]
 
 
 class SegmentStage(Stage):

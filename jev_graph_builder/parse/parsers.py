@@ -650,7 +650,7 @@ def parse_openapi(path: Path, spec: dict[str, Any]) -> ParsedDoc:
         w.heading(2, "Schemas")
         for name, schema in schemas.items():
             w.schema(3, str(name), schema)
-    meta = {"openapi_version": _text(spec.get("openapi") or spec.get("swagger")), "api_version": _text(info.get("version"))}
+    meta = {"openapi_version": _text(spec.get("openapi") or spec.get("swagger")), "version": _text(info.get("version"))}
     return ParsedDoc(OPENAPI_MIME, title, w.units, meta)
 
 

@@ -152,6 +152,10 @@ def test_named_values_are_whole_word_matches():
     values = ["9.0", "9.0.1", "9.1", "19.0"]
     assert named_values("Applies to VCF 9.0. See 19.0 too", values) == ["9.0", "19.0"]
     assert named_values("Upgrade to 9.0.1 only", values) == ["9.0.1"]   # 9.0 is part of a longer version
+    # a release the corpus does not know names the most specific known one it extends, never a shorter one too
+    assert named_values("SDDC Manager API 9.1.1.0", values) == ["9.1"]
+    assert named_values("Patch 9.0.1.2 is out", values) == ["9.0.1"]
+    assert named_values("Version 19.0.3", values) == ["19.0"] and named_values("Version 10.0.0.1", values) == []
     assert named_values("Works on all releases", values) == []
     assert named_values("Deploy VMware  Cloud\nFoundation now", ["Cloud Foundation", "Cloud"]) == ["Cloud Foundation", "Cloud"]
 
@@ -304,7 +308,7 @@ components:
     doc = parse(tmp_path / "api.yaml", _ingest_policy())
 
     assert doc.mime == OPENAPI_MIME and doc.title == "Hosts API 9.1.1"
-    assert doc.meta == {"openapi_version": "3.0.3", "api_version": "9.1.1"}
+    assert doc.meta == {"openapi_version": "3.0.3", "version": "9.1.1"}
     headings = [(u.heading_path, u.text) for u in doc.units if u.kind == "heading"]
     assert headings == [([], "Hosts API 9.1.1"), (["Hosts API 9.1.1"], "Hosts"),
                         (["Hosts API 9.1.1", "Hosts"], "PATCH /v1/hosts/{id}"), (["Hosts API 9.1.1", "Hosts"], "GET /v1/hosts"),
