@@ -256,6 +256,81 @@ def test_markdown_front_matter_is_metadata_not_content(tmp_path) -> None:
     assert parse(rule, _ingest_policy()).meta == {}
 
 
+def test_openapi_spec_is_one_section_per_operation_and_schema(tmp_path) -> None:
+    """An OpenAPI 3 spec: a section per tag and per operation, its parameters, request body and
+    responses as tables under lead-ins (one section, not one per part), a section per schema with
+    its properties, refs into a sibling file followed. Swagger 2.0 reads the same way; a YAML file
+    that is not a spec still has no parser."""
+    from jev_graph_builder.parse.parsers import OPENAPI_MIME, ParseError, parse
+
+    (tmp_path / "defs.yaml").write_text("Limit:\n  type: integer\n  description: Page size.\n", encoding="utf-8")
+    (tmp_path / "api.yaml").write_text("""
+openapi: 3.0.3
+info: {title: Hosts API, version: 9.1.1}
+tags: [{name: Hosts, description: Manage hosts.}]
+paths:
+  /v1/hosts/{id}:
+    parameters: [{name: id, in: path, required: true, schema: {type: string}, description: Host ID.}]
+    patch:
+      tags: [Hosts]
+      summary: Update a host
+      operationId: updateHost
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/HostSpec'}}}}
+      responses:
+        '202': {description: Accepted, content: {application/json: {schema: {$ref: '#/components/schemas/Task'}}}}
+  /v1/hosts:
+    get:
+      tags: [Hosts]
+      summary: List hosts
+      parameters: [{name: limit, in: query, schema: {$ref: 'defs.yaml#/Limit'}}]
+      responses: {'200': {description: OK}}
+components:
+  schemas:
+    HostSpec:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string, description: Host name.}
+        state: {type: string, enum: [ON, OFF], required: true}
+    Task: {allOf: [{$ref: '#/components/schemas/Base'}, {properties: {id: {type: string}}}]}
+""", encoding="utf-8")
+    (tmp_path / "swagger.json").write_text(
+        '{"swagger": "2.0", "info": {"title": "Edge API", "version": "1"}, "host": "nsx", "basePath": "/api",'
+        ' "paths": {"/edges": {"post": {"parameters": [{"name": "body", "in": "body", "schema": {"$ref": "#/definitions/Edge"}}],'
+        ' "responses": {"201": {"description": "Created", "schema": {"$ref": "#/definitions/Edge"}}}}}},'
+        ' "definitions": {"Edge": {"type": "object", "properties": {"name": {"type": "string"}}}}}', encoding="utf-8")
+    (tmp_path / "config.yaml").write_text("name: not-a-spec\n", encoding="utf-8")
+
+    doc = parse(tmp_path / "api.yaml", _ingest_policy())
+
+    assert doc.mime == OPENAPI_MIME and doc.title == "Hosts API 9.1.1"
+    assert doc.meta == {"openapi_version": "3.0.3", "api_version": "9.1.1"}
+    headings = [(u.heading_path, u.text) for u in doc.units if u.kind == "heading"]
+    assert headings == [([], "Hosts API 9.1.1"), (["Hosts API 9.1.1"], "Hosts"),
+                        (["Hosts API 9.1.1", "Hosts"], "PATCH /v1/hosts/{id}"), (["Hosts API 9.1.1", "Hosts"], "GET /v1/hosts"),
+                        (["Hosts API 9.1.1"], "Schemas"), (["Hosts API 9.1.1", "Schemas"], "HostSpec"),
+                        (["Hosts API 9.1.1", "Schemas"], "Task"), (["Hosts API 9.1.1", "Schemas"], "Limit")]
+    patch = [u.text for u in doc.units if u.heading_path[-1:] == ["PATCH /v1/hosts/{id}"]]
+    assert patch[:4] == ["Update a host", "Operation ID: updateHost", "Parameters:",
+                         "| Name | In | Type | Required | Description |\n|---|---|---|---|---|\n| id | path | string | yes | Host ID. |"]
+    assert "| application/json | HostSpec | yes |" in patch[5] and "| 202 | Accepted | Task |" in patch[7]
+    listing = " ".join(u.text for u in doc.units if u.heading_path[-1:] == ["GET /v1/hosts"])
+    assert "| limit | query | Limit | no |" in listing  # the sibling-file ref is named, not expanded
+    spec = " ".join(u.text for u in doc.units if u.heading_path[-1:] == ["HostSpec"])
+    assert "| name | string | yes | Host name. |" in spec and "| state | string, one of: ON, OFF | no |" in spec
+    task = [u.text for u in doc.units if u.heading_path[-1:] == ["Task"]]
+    assert task[0] == "Extends: Base" and "| id | string | no |" in task[1]
+    assert [u.text for u in doc.units if u.heading_path[-1:] == ["Limit"]] == ["Page size.", "Type: integer"]
+
+    swagger = parse(tmp_path / "swagger.json", _ingest_policy())
+    text = " ".join(u.text for u in swagger.units)
+    assert swagger.title == "Edge API 1" and "Servers: nsx/api" in text
+    assert "| body | body | Edge | no |" in text and "| 201 | Created | Edge |" in text and "| name | string | no |" in text
+
+    with pytest.raises(ParseError):
+        parse(tmp_path / "config.yaml", _ingest_policy())
+
+
 def test_bootstrap_sample_represents_every_input(tmp_path) -> None:
     """S0's sample covers every input path given to the command: a symlinked file belongs to the input that
     links it, same-named folders in two inputs are separate strata, and the cap is shared round-robin."""

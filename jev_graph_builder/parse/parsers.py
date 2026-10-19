@@ -398,6 +398,262 @@ def parse_pdf(path: Path, ocr_dpi: int, ocr_language: str) -> ParsedDoc:
     return ParsedDoc("application/pdf", title, units, meta)
 
 
+# ------------------------------------------------------------------ openapi
+
+
+OPENAPI_MIME = "application/vnd.oai.openapi"
+_HTTP_METHODS = ("get", "put", "post", "delete", "patch", "options", "head", "trace")
+_MAX_REF_HOPS = 10
+
+
+def _yaml12_loader() -> type:
+    """A safe YAML loader whose booleans are YAML 1.2's (`true`/`false` only), as OpenAPI specifies:
+    an enum of `ON, OFF` stays two strings, not YAML 1.1's True and False."""
+    import yaml
+
+    base = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+    loader = type("Yaml12Loader", (base,), {})
+    loader.yaml_implicit_resolvers = {
+        first: [(tag, rx) for tag, rx in resolvers if tag != "tag:yaml.org,2002:bool"]
+        for first, resolvers in base.yaml_implicit_resolvers.items()}
+    loader.add_implicit_resolver("tag:yaml.org,2002:bool", re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"), list("tTfF"))
+    return loader
+
+
+def _load_structured(path: Path) -> Any:
+    """A `.json`, `.yaml` or `.yml` file's data, or None when it does not parse."""
+    import json
+
+    import yaml
+
+    text = _read_text(path)
+    try:
+        if path.suffix.lower() == ".json":
+            return json.loads(text)
+        return yaml.load(text, Loader=_yaml12_loader())  # noqa: S506 - a safe loader
+    except (ValueError, yaml.YAMLError):
+        return None
+
+
+def load_openapi(path: Path) -> dict[str, Any] | None:
+    """The spec in a file whose top level names an OpenAPI or Swagger version; None for any other file."""
+    spec = _load_structured(path)
+    return spec if isinstance(spec, dict) and ("openapi" in spec or "swagger" in spec) else None
+
+
+class _Refs:
+    """Follows `$ref`s inside the spec and into sibling files (`defs.yaml#/Name`), each file read once."""
+
+    def __init__(self, path: Path, spec: dict[str, Any]) -> None:
+        self.base = path.parent
+        self.files: dict[str, Any] = {"": spec}
+
+    def file(self, name: str) -> Any:
+        if name not in self.files:
+            target = (self.base / name).resolve()
+            self.files[name] = _load_structured(target) if target.is_file() else None
+        return self.files[name]
+
+    def resolve(self, obj: Any) -> Any:
+        for _ in range(_MAX_REF_HOPS):
+            if not (isinstance(obj, dict) and isinstance(obj.get("$ref"), str)):
+                break
+            name, _, pointer = obj["$ref"].partition("#")
+            node = self.file(name)
+            for part in [p for p in pointer.split("/") if p]:
+                node = node.get(part.replace("~1", "/").replace("~0", "~")) if isinstance(node, dict) else None
+            if node is None:
+                break
+            obj = node
+        return obj
+
+
+def _ref_name(ref: str) -> str:
+    return ref.rsplit("/", 1)[-1].rsplit("#", 1)[-1]
+
+
+def _schema_type(schema: Any) -> str:
+    """A schema as a short type: a referenced schema by name, arrays and compositions spelled out."""
+    if not isinstance(schema, dict):
+        return ""
+    if isinstance(schema.get("$ref"), str):
+        return _ref_name(schema["$ref"])
+    if schema.get("type") == "array":
+        return f"array of {_schema_type(schema.get('items')) or 'any'}"
+    for key, sep in (("allOf", " and "), ("oneOf", " or "), ("anyOf", " or ")):
+        if isinstance(schema.get(key), list):
+            return sep.join(t for t in (_schema_type(s) for s in schema[key]) if t)
+    kind = schema.get("type", "")
+    kind = " or ".join(map(str, kind)) if isinstance(kind, list) else str(kind)
+    if schema.get("format"):
+        kind = f"{kind} ({schema['format']})"
+    if isinstance(schema.get("enum"), list):
+        kind = f"{kind}, one of: {', '.join(map(str, schema['enum']))}"
+    return kind
+
+
+def _text(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _names(value: Any) -> list[str]:
+    """An object's `required` list; a property's own `required: true` (an old Swagger habit) is not one."""
+    return [str(v) for v in value] if isinstance(value, list) else []
+
+
+def _properties(schema: dict[str, Any]) -> tuple[dict[str, Any], set[str], list[str]]:
+    """An object schema's properties and required names, inline `allOf` parts included, and the
+    schemas it extends (its `allOf` references)."""
+    props = dict(schema.get("properties") or {})
+    required = set(_names(schema.get("required")))
+    bases: list[str] = []
+    for part in schema.get("allOf") or []:
+        if isinstance(part, dict) and isinstance(part.get("$ref"), str):
+            bases.append(_ref_name(part["$ref"]))
+        elif isinstance(part, dict):
+            props.update(part.get("properties") or {})
+            required |= set(_names(part.get("required")))
+    return props, required, bases
+
+
+class _OpenApiWriter:
+    def __init__(self, refs: _Refs) -> None:
+        self.refs = refs
+        self.heads = _Headings()
+        self.units: list[ParsedUnit] = []
+
+    def heading(self, level: int, text: str) -> None:
+        self.heads.push(level, text)
+        self.units.append(ParsedUnit(HEADING, text, self.heads.path[:-1]))
+
+    def add(self, kind: str, text: str) -> None:
+        if text:
+            self.units.append(ParsedUnit(kind, text, self.heads.path))
+
+    def paragraphs(self, text: Any) -> None:
+        for para in re.split(r"\n\s*\n", _text(text)):
+            self.add(PARAGRAPH, para)
+
+    def table(self, rows: list[list[str]]) -> None:
+        if len(rows) > 1:
+            self.add(TABLE, _table_md(rows))
+
+    def operation(self, level: int, method: str, path: str, op: dict[str, Any], shared: list[Any]) -> None:
+        self.heading(level, f"{method.upper()} {path}")
+        self.paragraphs(op.get("summary"))
+        if _text(op.get("description")) != _text(op.get("summary")):
+            self.paragraphs(op.get("description"))
+        if op.get("operationId"):
+            self.add(PARAGRAPH, f"Operation ID: {op['operationId']}")
+        if op.get("deprecated"):
+            self.add(PARAGRAPH, "Deprecated.")
+        params = {}
+        for raw in [*shared, *(op.get("parameters") or [])]:  # an operation's own parameter overrides a path one
+            p = self.refs.resolve(raw)
+            if isinstance(p, dict) and p.get("name"):
+                params[(p["name"], p.get("in"))] = p
+        if params:
+            self.add(PARAGRAPH, "Parameters:")
+            self.table([["Name", "In", "Type", "Required", "Description"]] + [
+                [str(p["name"]), _text(p.get("in")), _schema_type(p.get("schema") or p),
+                 "yes" if p.get("required") else "no", _text(p.get("description"))] for p in params.values()])
+        body = self.refs.resolve(op.get("requestBody"))
+        if isinstance(body, dict):
+            self.add(PARAGRAPH, "Request body:")
+            self.paragraphs(body.get("description"))
+            self.table([["Media type", "Schema", "Required"]] + [
+                [media, _schema_type((c or {}).get("schema")), "yes" if body.get("required") else "no"]
+                for media, c in (body.get("content") or {}).items()])
+        responses = op.get("responses") or {}
+        if responses:
+            self.add(PARAGRAPH, "Responses:")
+            rows = [["Status", "Description", "Schema"]]
+            for code, raw in responses.items():
+                r = self.refs.resolve(raw) or {}
+                schemas = [_schema_type((c or {}).get("schema")) for c in (r.get("content") or {}).values()]
+                schemas.append(_schema_type(r.get("schema")))
+                rows.append([str(code), _text(r.get("description")), ", ".join(dict.fromkeys(s for s in schemas if s))])
+            self.table(rows)
+
+    def schema(self, level: int, name: str, schema: Any) -> None:
+        schema = self.refs.resolve(schema)
+        if not isinstance(schema, dict):
+            return
+        self.heading(level, name)
+        self.paragraphs(schema.get("title"))
+        self.paragraphs(schema.get("description"))
+        props, required, bases = _properties(schema)
+        if bases:
+            self.add(PARAGRAPH, f"Extends: {', '.join(bases)}")
+        if props:
+            self.table([["Property", "Type", "Required", "Description"]] + [
+                [str(k), _schema_type(v), "yes" if k in required else "no", _text((v or {}).get("description"))]
+                for k, v in props.items()])
+        elif not bases:
+            self.add(PARAGRAPH, f"Type: {_schema_type(schema)}" if _schema_type(schema) else "")
+
+
+def _external_ref_files(node: Any, out: set[str]) -> set[str]:
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str) and not ref.startswith("#"):
+            out.add(ref.partition("#")[0])
+        for v in node.values():
+            _external_ref_files(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            _external_ref_files(v, out)
+    return out
+
+
+def parse_openapi(path: Path, spec: dict[str, Any]) -> ParsedDoc:
+    """An OpenAPI 3 or Swagger 2.0 spec as a document: one section per tag, one per operation (method
+    and path, then its parameters, request body and responses as tables), then one per schema
+    (its properties as a table). Referenced schemas are named, not expanded."""
+    refs = _Refs(path, spec)
+    w = _OpenApiWriter(refs)
+    info = spec.get("info") or {}
+    title = " ".join(t for t in (_text(info.get("title")) or path.stem, _text(info.get("version"))) if t)
+    w.heading(1, title)
+    w.paragraphs(info.get("description"))
+    servers = [_text(s.get("url")) for s in spec.get("servers") or [] if isinstance(s, dict)]
+    if spec.get("host"):
+        servers.append(f"{spec['host']}{spec.get('basePath', '')}")
+    if servers:
+        w.add(PARAGRAPH, "Servers: " + ", ".join(servers))
+
+    tag_docs = {t["name"]: t.get("description") for t in spec.get("tags") or [] if isinstance(t, dict) and t.get("name")}
+    by_tag: dict[str, list[tuple[str, str, dict[str, Any], list[Any]]]] = {name: [] for name in tag_docs}
+    for path_key, item in (spec.get("paths") or {}).items():
+        item = refs.resolve(item)
+        if not isinstance(item, dict):
+            continue
+        for method in _HTTP_METHODS:
+            op = item.get(method)
+            if isinstance(op, dict):
+                tag = (op.get("tags") or ["Other operations"])[0]
+                by_tag.setdefault(str(tag), []).append((method, str(path_key), op, item.get("parameters") or []))
+    for tag, ops in by_tag.items():
+        if not ops:
+            continue
+        w.heading(2, tag)
+        w.paragraphs(tag_docs.get(tag))
+        for method, path_key, op, shared in ops:
+            w.operation(3, method, path_key, op, shared)
+
+    schemas = dict((spec.get("components") or {}).get("schemas") or spec.get("definitions") or {})
+    for name in sorted(_external_ref_files(spec, set())):
+        data = refs.file(name)
+        if isinstance(data, dict):
+            schemas.update({k: v for k, v in data.items() if k not in schemas})
+    if schemas:
+        w.heading(2, "Schemas")
+        for name, schema in schemas.items():
+            w.schema(3, str(name), schema)
+    meta = {"openapi_version": _text(spec.get("openapi") or spec.get("swagger")), "api_version": _text(info.get("version"))}
+    return ParsedDoc(OPENAPI_MIME, title, w.units, meta)
+
+
 # ------------------------------------------------------------------ dispatch
 
 
@@ -428,6 +684,10 @@ def parser_for(path: Path, opts: dict[str, Any]) -> Callable[[], ParsedDoc]:
         return lambda: parse_docx(path)
     if suffix == ".pdf":
         return lambda: parse_pdf(path, ocr["dpi"], ocr["language"])
+    if suffix in {".json", ".yaml", ".yml"}:
+        spec = load_openapi(path)
+        if spec is not None:
+            return lambda: parse_openapi(path, spec)
     if _looks_like_html(path):
         return lambda: parse_html(_read_text(path), html)
     mime, _ = mimetypes.guess_type(path.name)

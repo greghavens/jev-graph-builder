@@ -55,7 +55,7 @@ jev-graph-builder build './site/**/*.html'
 ```
 
 - Directories are read recursively. Hidden files (names starting with `.`) are skipped.
-- Supported formats: Markdown, HTML, Word (`.docx`), PDF, and plain text (`.txt`, `.rst`, other text files). HTML is also recognised by its content when the file name doesn't say.
+- Supported formats: Markdown, HTML, Word (`.docx`), PDF, plain text (`.txt`, `.rst`, other text files), and OpenAPI 3 or Swagger 2.0 specs (`.json`, `.yaml`, `.yml`). HTML is also recognised by its content when the file name doesn't say. A spec becomes one section per operation (its parameters, request body and responses as tables) and one per schema.
 - Markdown front matter becomes document metadata.
 - A file that can't be read is marked failed and the rest of the run carries on. `status` lists failures, and re-running `build` retries them.
 
