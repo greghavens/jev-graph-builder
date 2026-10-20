@@ -20,11 +20,11 @@ const ALL_RELATIONS = "*";
 export interface Hit {
   chunk_id: string; doc_id: string; source_uri: string; text: string; title: string | null; heading_path: string[];
   char_start: number | null; char_end: number | null; rrf: number; score: number; probabilities: Record<string, number>;
-  decision_id: string | null;
+  decision_id: string | null; meta: Record<string, unknown> | null;
 }
 
 interface ChunkRow { chunk_id: string; doc_id: string; ord: number; title: string | null; text: string; heading_path: string | null;
-  source_uri: string; char_start: number | null; char_end: number | null }
+  source_uri: string; char_start: number | null; char_end: number | null; meta: string | null }
 
 function limiter(n: number) {
   let active = 0;
@@ -68,7 +68,7 @@ export class Graph {
     const out = new Map<string, ChunkRow>();
     if (!ids.length) return out;
     const rows = await this.db.prepare(
-      "SELECT chunk_id, doc_id, ord, title, text, heading_path, source_uri, char_start, char_end FROM chunks " +
+      "SELECT chunk_id, doc_id, ord, title, text, heading_path, source_uri, char_start, char_end, meta FROM chunks " +
       "WHERE chunk_id IN (SELECT value FROM json_each(?1))").bind(JSON.stringify([...new Set(ids)])).all<ChunkRow>();
     for (const r of rows.results) out.set(r.chunk_id, r);
     return out;
@@ -107,7 +107,7 @@ export class Graph {
       const r = rows.get(id)!;
       return { chunk_id: id, doc_id: r.doc_id, source_uri: r.source_uri, text: r.text, title: r.title,
                heading_path: r.heading_path ? JSON.parse(r.heading_path) : [], char_start: r.char_start, char_end: r.char_end,
-               rrf: fused.get(id)!, score: 0, probabilities: {}, decision_id: null };
+               rrf: fused.get(id)!, score: 0, probabilities: {}, decision_id: null, meta: r.meta ? JSON.parse(r.meta) : null };
     });
   }
 
@@ -156,7 +156,7 @@ export class Graph {
       for (const g of gated) {
         if (!g || g.d.outcome !== ACCEPT || nodes.has(g.r.to_id)) continue;
         const row = texts.get(g.r.to_id)!;
-        nodes.set(g.r.to_id, { ...row, heading_path: row.heading_path ? JSON.parse(row.heading_path) : [] });
+        nodes.set(g.r.to_id, { ...row, heading_path: row.heading_path ? JSON.parse(row.heading_path) : [], meta: row.meta ? JSON.parse(row.meta) : null });
         usedEdges.push({ edge_id: g.r.edge_id, src: g.r.from_id, dst: g.r.to_id, rel: g.r.rel, decision_id: g.d.decision_id });
         added.push(g.r.to_id);
       }
@@ -181,7 +181,7 @@ export class Graph {
     const passages: Record<string, Record<string, unknown>> = {};
     items.forEach(([kind, id, text, src], i) => {
       passages[`${this.b.policies.query.citation_prefix}${i + 1}`] = { kind, id, text, source_uri: src.source_uri ?? null,
-        doc_id: src.doc_id ?? null, title: src.title ?? null, heading_path: src.heading_path ?? null };
+        doc_id: src.doc_id ?? null, title: src.title ?? null, heading_path: src.heading_path ?? null, meta: src.meta ?? null };
     });
     return passages;
   }
@@ -194,7 +194,7 @@ export class Graph {
     if (plan.out_of_scope) return out;
     const ranked = await this.rerank(query, await this.candidates(query));
     const seeds = ranked.slice(0, plan.k_seeds).map((h) => ({ chunk_id: h.chunk_id, doc_id: h.doc_id, text: h.text, title: h.title,
-      heading_path: h.heading_path, source_uri: h.source_uri }));
+      heading_path: h.heading_path, source_uri: h.source_uri, meta: h.meta }));
     const { nodes, usedEdges } = await this.expand(query, seeds, plan);
     const comms = plan.use_communities ? await this.communities([...nodes.keys()]) : [];
     const passages = this.assemble(nodes, comms);

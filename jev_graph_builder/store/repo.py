@@ -79,3 +79,36 @@ async def supersede_chunks(conn: AsyncConnection, ids: Sequence[str]) -> None:
         await conn.execute(
             "UPDATE entities e SET status = 'superseded' WHERE e.entity_id IN (SELECT entity_id FROM mentions WHERE chunk_id = ANY(%s)) "
             "AND NOT EXISTS (SELECT 1 FROM mentions m WHERE m.entity_id = e.entity_id AND m.status <> 'superseded')", (ids,))
+
+
+def merge_meta(*metas: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Metadata of a chunk several documents carry: each key's values from every document, in first-seen order."""
+    out: dict[str, list[Any]] = {}
+    listed: set[str] = set()  # a key some document gives as a list stays a list
+    for meta in metas:
+        for k, v in (meta or {}).items():
+            given = v if isinstance(v, list) else [v]
+            if isinstance(v, list):
+                listed.add(k)
+            if k not in out:
+                out[k] = list(given)  # the first document's values as they are, repeats included
+            else:
+                out[k].extend(x for x in given if x not in out[k])
+    return {k: v[0] if len(v) == 1 and k not in listed else v for k, v in out.items()} or None
+
+
+async def retire_chunks(conn: AsyncConnection, ids: Sequence[str]) -> None:
+    """Chunks their document no longer carries. One another accepted document reuses moves to that document (its
+    first occurrence there), keeping everything built from it; the rest are superseded with what was drawn from them."""
+    if not ids:
+        return
+    ids = list(ids)
+    moved = await fetch(
+        conn, "SELECT DISTINCT ON (o.chunk_id) o.chunk_id, o.doc_id, o.ord FROM chunk_occurrences o "
+        "JOIN documents d USING (doc_id) WHERE o.chunk_id = ANY(%s) AND d.status = 'accepted' "
+        "ORDER BY o.chunk_id, o.doc_id, o.ord", (ids,))
+    for m in moved:
+        await conn.execute("UPDATE chunks SET doc_id = %s, ord = %s WHERE chunk_id = %s", (m["doc_id"], m["ord"], m["chunk_id"]))
+        await conn.execute("DELETE FROM chunk_occurrences WHERE doc_id = %s AND ord = %s", (m["doc_id"], m["ord"]))
+    kept = {m["chunk_id"] for m in moved}
+    await supersede_chunks(conn, [i for i in ids if i not in kept])

@@ -39,7 +39,7 @@ WORKERS_DEV_URL = re.compile(r"https://\S+\.workers\.dev")
 WORKERS_AI_RUN = re.compile(r"^https://api\.cloudflare\.com/client/v4/accounts/[^/]+/ai/run/(?P<model>.+)$")
 
 SCHEMA = """CREATE TABLE IF NOT EXISTS chunks (rid INTEGER PRIMARY KEY, chunk_id TEXT UNIQUE NOT NULL, doc_id TEXT, ord INTEGER,
-  title TEXT, text TEXT, heading_path TEXT, role TEXT, doc_type TEXT, source_uri TEXT, char_start INTEGER, char_end INTEGER);
+  title TEXT, text TEXT, heading_path TEXT, role TEXT, doc_type TEXT, source_uri TEXT, char_start INTEGER, char_end INTEGER, meta TEXT);
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(body, tokenize = 'unicode61');
 CREATE TABLE IF NOT EXISTS edges (edge_id TEXT PRIMARY KEY, src_id TEXT NOT NULL, dst_id TEXT NOT NULL, rel TEXT, weight REAL);
 CREATE INDEX IF NOT EXISTS edges_src ON edges (src_id, weight);
@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS decisions (decision_id TEXT PRIMARY KEY, subject_kind
 """
 
 # What the query path serves: accepted chunks of documents not quarantined (as in query/search.py).
-CHUNKS_SQL = """SELECT c.chunk_id, c.doc_id, c.ord, c.title, c.text, c.heading_path, c.role, d.doc_type, d.source_uri,
+CHUNKS_SQL = """SELECT c.chunk_id, c.doc_id, c.ord, c.title, c.text, c.heading_path, c.role, d.doc_type, d.source_uri, c.meta,
   u1.char_start, u2.char_end FROM chunks c JOIN documents d ON d.doc_id = c.doc_id
   LEFT JOIN units u1 ON u1.unit_id = c.unit_ids[1] LEFT JOIN units u2 ON u2.unit_id = c.unit_ids[cardinality(c.unit_ids)]
   WHERE c.corpus_id = %s AND c.status = 'accepted' AND NOT coalesce(d.quarantined, false) ORDER BY c.chunk_id"""

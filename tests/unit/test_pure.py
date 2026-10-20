@@ -21,7 +21,7 @@ from jev_graph_builder.pipeline.segment_spans import runs, spans, split_gaps, sp
 from jev_graph_builder.pipeline.unionfind import JEV_SAID_DIFFERENT, JOINS_EXISTING, merge
 from jev_graph_builder.parse.parsers import ParsedUnit
 from jev_graph_builder.pipeline.s1_ingest import fit_text, split_long_units
-from jev_graph_builder.pipeline.s2_segment import SegmentStage, max_chunk_tokens, named_values, structural_role
+from jev_graph_builder.pipeline.s2_segment import SegmentStage, max_chunk_tokens, named_values, structural_role, widened, with_parents
 from jev_graph_builder.pipeline.s5_entities import identical_pairs, name_key_pairs
 from jev_graph_builder.pipeline.common import WorkItem
 from jev_graph_builder.pipeline.s8_training import TrainingStage, assign_split
@@ -158,6 +158,26 @@ def test_named_values_are_whole_word_matches():
     assert named_values("Version 19.0.3", values) == ["19.0"] and named_values("Version 10.0.0.1", values) == []
     assert named_values("Works on all releases", values) == []
     assert named_values("Deploy VMware  Cloud\nFoundation now", ["Cloud Foundation", "Cloud"]) == ["Cloud Foundation", "Cloud"]
+
+
+def test_a_release_also_counts_as_each_broader_release_it_extends():
+    values = ["9.0", "9.1", "9.1.1.0", "19.1"]
+    assert with_parents(["9.1.1.0"], values) == ["9.1", "9.1.1.0"]
+    assert with_parents(["9.0", "9.1"], values) == ["9.0", "9.1"]
+    assert with_parents(["9.1.2"], values) == ["9.1", "9.1.2"]          # a value the corpus does not know is kept
+    assert with_parents(["Holodeck 9.0.2"], ["Holodeck 9.0"]) == ["Holodeck 9.0.2"]  # a title ending in a release is not one
+    assert widened("9.1.1.0", values) == ["9.1", "9.1.1.0"]
+    assert widened("9.0", values) == "9.0" and widened({"a": 1}, values) == {"a": 1}  # nothing to add: as given
+
+
+def test_merged_metadata_keeps_the_first_documents_values_and_adds_the_others():
+    from jev_graph_builder.store.repo import merge_meta
+
+    assert merge_meta({"heading_path": ["NSX", "NSX"]}) == {"heading_path": ["NSX", "NSX"]}
+    assert merge_meta({"release": "1.0"}, {"release": "2.0"}) == {"release": ["1.0", "2.0"]}
+    assert merge_meta({"release": ["1.0"]}, {"release": "1.0"}) == {"release": ["1.0"]}
+    assert merge_meta({"release": "1.0"}, {"release": "1.0"}) == {"release": "1.0"}
+    assert merge_meta(None, {}) is None
 
 
 def test_rrf_and_composite_deterministic():

@@ -33,6 +33,7 @@ class Hit:
     score: float = 0.0
     probabilities: dict[str, float] = field(default_factory=dict)
     decision_id: str | None = None
+    meta: dict[str, Any] | None = None  # the chunk's metadata, e.g. the releases it applies to
 
     def as_dict(self) -> dict[str, Any]:
         return dict(self.__dict__)
@@ -80,12 +81,13 @@ async def candidates(ctx: Context, query: str, filters: dict[str, Any] | None = 
     fused = rrf_fuse([ann, fts], pol["rrf_k"])
     top = sorted(fused, key=lambda c: (-fused[c], c))[: pol["rerank_candidates"]]
     rows = {r["chunk_id"]: r for r in await ctx.db.fetch(
-        "SELECT c.chunk_id, c.doc_id, d.source_uri, c.text, c.title, c.heading_path, u1.char_start, u2.char_end "
+        "SELECT c.chunk_id, c.doc_id, d.source_uri, c.text, c.title, c.heading_path, c.meta, u1.char_start, u2.char_end "
         "FROM chunks c JOIN documents d ON d.doc_id = c.doc_id "
         "LEFT JOIN units u1 ON u1.unit_id = c.unit_ids[1] LEFT JOIN units u2 ON u2.unit_id = c.unit_ids[cardinality(c.unit_ids)] "
         "WHERE c.chunk_id = ANY(%s)", (top,))}
     return [Hit(chunk_id=c, doc_id=rows[c]["doc_id"], source_uri=rows[c]["source_uri"], text=rows[c]["text"], title=rows[c]["title"],
-                heading_path=rows[c]["heading_path"] or [], char_start=rows[c]["char_start"], char_end=rows[c]["char_end"], rrf=fused[c])
+                heading_path=rows[c]["heading_path"] or [], char_start=rows[c]["char_start"], char_end=rows[c]["char_end"], rrf=fused[c],
+                meta=rows[c]["meta"])
             for c in top if c in rows]
 
 

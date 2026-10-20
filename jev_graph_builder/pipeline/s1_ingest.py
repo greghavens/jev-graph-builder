@@ -195,7 +195,7 @@ class IngestStage(Stage):
             if old:
                 chunks = await repo.fetch(conn, "SELECT chunk_id FROM chunks WHERE doc_id = ANY(%s) AND status <> 'superseded'",
                                           ([r["doc_id"] for r in old],))
-                await repo.supersede_chunks(conn, [r["chunk_id"] for r in chunks])
+                await repo.retire_chunks(conn, [r["chunk_id"] for r in chunks])
             await repo.upsert(conn, "documents", doc_row, key=("doc_id",))
             await repo.upsert_many(conn, "units", unit_rows, key=("unit_id",))
             await write_decisions(conn, triage)

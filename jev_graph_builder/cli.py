@@ -474,6 +474,15 @@ def status() -> None:
 
 
 
+@app.command("refresh-metadata")
+def refresh_metadata(apply: bool = typer.Option(False, "--apply", help="Write the changes (default: report them only)")) -> None:
+    """Recompute document and chunk metadata with the current code. No Jev calls; text, IDs, embeddings, entities
+    and links are untouched. Without --apply it only reports what would change."""
+    from jev_graph_builder.pipeline.refresh_meta import refresh_metadata as refresh
+
+    _echo(_run(lambda ctx: refresh(ctx, apply)))
+
+
 @app.command()
 def publish(target: str = typer.Option("postgres", "--target", help="postgres | cloudflare"),
             to: Optional[str] = typer.Option(None, "--to", envvar="JGB_PUBLISH_DSN", show_envvar=True,

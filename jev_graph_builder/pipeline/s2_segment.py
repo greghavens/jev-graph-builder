@@ -17,6 +17,8 @@ import re
 from collections import Counter
 from typing import Any
 
+from psycopg.types.json import Jsonb
+
 from jev_graph_builder.ids import sha256_hex, short_key
 from jev_graph_builder.jev.gating import ACCEPT
 from jev_graph_builder.jev.service import AskResult, Decision
@@ -30,6 +32,7 @@ from jev_graph_builder.store import repo
 QS_CHECK_FANOUT = "chunk_check_fanout"
 QS_APPLIES, QS_DERIVABLE = "metadata_applies", "metadata_derivable"
 _TOKEN = re.compile(r"\w+(?:\.\w+)*")  # a word, or a dotted run such as a version
+_DOTTED = re.compile(r"\w+(?:\.\w+)+")  # a dotted run alone, such as a release
 _ORDERED = re.compile(r"^\s*\d+[.)]\s")  # an ordered list's first item
 
 
@@ -87,6 +90,26 @@ def named_values(text: str, values: list[str]) -> list[str]:
         if extended:
             named.add(max(extended, key=lambda v: len(dotted[v])))
     return [v for v in values if v in named]
+
+
+def with_parents(given: list[str], values: list[str]) -> list[str]:
+    """`given` plus each corpus value a given value extends at a dot ("9.1.1.0" also counts as "9.1"), so a
+    specific release is found under its broader one too. Only between dotted runs (a release, not a title that
+    ends in one: "Holodeck 9.0.2" does not extend "Holodeck 9.0")."""
+    out = set(given)
+    for g in given:
+        if _DOTTED.fullmatch(g):
+            out.update(v for v in values if _DOTTED.fullmatch(v) and g.startswith(v + "."))
+    return [v for v in values if v in out] + [g for g in given if g not in values]
+
+
+def widened(value: Any, values: list[str]) -> Any:
+    """A document's own value with the corpus values it extends; unchanged (as given) when it extends none."""
+    given = value if isinstance(value, list) else [value]
+    if not all(isinstance(g, str) for g in given):
+        return value
+    out = with_parents(given, values)
+    return value if set(out) == set(given) else out
 
 
 class SegmentStage(Stage):
@@ -154,16 +177,17 @@ class SegmentStage(Stage):
         text = DOC_JOIN.join(u["text"] for u in units)
         named_in = DOC_JOIN.join(t for t in (title, text) if t)
         for field in ctx.reg.policy("ingest.metadata_fields"):
-            if field in meta:
-                continue
             values = await self._field_values(ctx, field)
+            if field in meta:
+                meta[field] = widened(meta[field], values)
+                continue
             derivable = await self._derivable(ctx, field, values)
             results.append(derivable)
             if derivable.single.outcome != ACCEPT:
                 continue
             applied = named_values(named_in, values) or await self._jev_applies(ctx, doc_id, title, text, field, values, results)
             if applied:
-                meta[field] = applied
+                meta[field] = with_parents(applied, values)
         return meta or None, results
 
     async def _jev_applies(self, ctx: Context, doc_id: str, title: str | None, text: str, field: str,
@@ -225,12 +249,23 @@ class SegmentStage(Stage):
                            "chunk_id": sha256_hex(doc_id, cu[0]["unit_id"], cu[-1]["unit_id"], text)})
             prev_heading = heading_path_of(cu[-1])
 
-        checks = await self._check_chunks(ctx, doc_id, drafts, results)
+        reused = await self._reusable(ctx, doc_id, drafts)
+        own = [d for d in drafts if d["text"] not in reused]
+        checks = await self._check_chunks(ctx, doc_id, own, results)
+        check_of = {d["chunk_id"]: c for d, c in zip(own, checks, strict=True)}
 
         min_share = reg.policy("segment.role_min_share")
         chunk_rows: list[dict[str, Any]] = []
-        for ord_, (d, check) in enumerate(zip(drafts, checks, strict=True)):
+        occurrences: list[dict[str, Any]] = []
+        sequence: list[dict[str, Any]] = []  # every chunk of the document in order, its own and reused ones
+        for ord_, d in enumerate(drafts):
             cu = d["units"]
+            if d["text"] in reused:
+                prior = reused[d["text"]]
+                occurrences.append({"doc_id": doc_id, "ord": ord_, "chunk_id": prior["chunk_id"], "created_run_id": ctx.run_id})
+                sequence.append({"chunk_id": prior["chunk_id"], "heading_path": heading_path_of(cu[0]), "reused": True})
+                continue
+            check = check_of[d["chunk_id"]]
             accepted = check.outcome == ACCEPT
             chunk_rows.append({
                 "chunk_id": d["chunk_id"], "corpus_id": doc["corpus_id"], "doc_id": doc_id, "ord": ord_,
@@ -241,22 +276,57 @@ class SegmentStage(Stage):
                 "status": "accepted" if accepted else "rejected",
                 "registry_version": ctx.registry_version, "created_run_id": ctx.run_id,
             })
+            sequence.append({"chunk_id": d["chunk_id"], "heading_path": chunk_rows[-1]["heading_path"], "reused": False})
 
-        edges = self._structural_edges(ctx, doc_id, chunk_rows)
+        edges = self._structural_edges(ctx, doc_id, sequence)
+        shared = {s["chunk_id"] for s in sequence if s["reused"]}
+        own_edges = [e for e in edges if e["src_id"] not in shared and e["dst_id"] not in shared]
+        # An edge touching a reused chunk that already exists (the same chunks follow each other there too) is left as it is.
+        shared_edges = [e for e in edges if e["src_id"] in shared or e["dst_id"] in shared]
+        prior_meta = {p["chunk_id"]: p["meta"] for p in reused.values()}
+        widened = {cid: m for cid, old in prior_meta.items() if (m := repo.merge_meta(old, meta)) != old}
 
         async def write(conn) -> str:
             ids = [c["chunk_id"] for c in chunk_rows]
             stale = await repo.fetch(conn, "SELECT chunk_id FROM chunks WHERE doc_id = %s AND NOT (chunk_id = ANY(%s)) AND status <> 'superseded'", (doc_id, ids))
-            await repo.supersede_chunks(conn, [r["chunk_id"] for r in stale])
+            await repo.retire_chunks(conn, [r["chunk_id"] for r in stale])
             # Chunk text is immutable per chunk_id; keep S3/S4 outputs if the row exists.
             await repo.upsert_many(conn, "chunks", chunk_rows, key=("chunk_id",),
                                    update=("ord", "context_prefix", "role", "topic", "boilerplate", "meta", "status",
                                            "registry_version"))
-            await repo.upsert_many(conn, "edges", edges, key=("edge_id",))
+            await conn.execute("DELETE FROM chunk_occurrences WHERE doc_id = %s", (doc_id,))
+            await repo.upsert_many(conn, "chunk_occurrences", occurrences, key=("doc_id", "ord"))
+            # A reused chunk carries the metadata of every document it occurs in (e.g. each release).
+            for cid, m in widened.items():
+                await conn.execute("UPDATE chunks SET meta = %s WHERE chunk_id = %s", (Jsonb(m), cid))
+            await repo.upsert_many(conn, "edges", own_edges, key=("edge_id",))
+            await repo.upsert_many(conn, "edges", shared_edges, key=("edge_id",), update=())
             await write_decisions(conn, *results)
             return DONE
 
         return write
+
+    async def _reusable(self, ctx: Context, doc_id: str, drafts: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """Drafts whose exact text an accepted chunk of another accepted document already has: that chunk is
+        reused (no Jev check, enrichment, embedding, entities or links again). By text alone, so it holds for
+        any corpus: a section repeated across releases, editions or documents is built once. Only a chunk of a
+        finished segmentation is reused (its run finished every item it selected, or it predates the last run that
+        did), never one of the run in progress or of an interrupted one: which document owns a shared chunk then
+        never depends on the order documents were segmented in, so a resumed build equals an uninterrupted one."""
+        texts = list({d["text"] for d in drafts})
+        rows = await ctx.db.fetch(
+            "WITH done AS (SELECT run_id, started_at FROM runs WHERE stage = %s AND status = 'done' "
+            " AND (report->>'failed')::int = 0 AND (report->>'done')::int = (report->>'selected')::int), "
+            "cut AS (SELECT max(started_at) AS t FROM done) "
+            "SELECT DISTINCT ON (md5(c.text)) c.chunk_id, c.text, c.meta FROM chunks c JOIN documents d USING (doc_id) "
+            "LEFT JOIN runs r ON r.run_id = c.created_run_id "
+            "WHERE c.corpus_id = %s AND md5(c.text) = ANY(ARRAY(SELECT md5(t) FROM unnest(%s::text[]) AS t)) "
+            "AND c.doc_id <> %s AND c.status = 'accepted' AND d.status = 'accepted' AND NOT d.quarantined "
+            "AND (r.run_id IS NULL OR r.run_id IN (SELECT run_id FROM done) OR r.started_at < (SELECT t FROM cut)) "
+            "ORDER BY md5(c.text), c.chunk_id",
+            (self.name, ctx.corpus_id, texts, doc_id),
+        )
+        return {r["text"]: r for r in rows if r["text"] in texts}
 
     def _structural_edges(self, ctx: Context, doc_id: str, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         reg = ctx.reg

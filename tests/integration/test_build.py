@@ -175,10 +175,17 @@ async def test_build_derives_missing_metadata_from_text(env: Harnessed, docs: li
     assert report.stopped == {"reason": STOPPED_AS_ASKED, "stage": "segment"}, report.stopped
 
     with psycopg.connect(env.settings.dsn) as conn:
-        rows = conn.execute("SELECT d.source_uri, c.meta FROM chunks c JOIN documents d USING (doc_id)").fetchall()
+        # Chunks one document carries; a chunk several documents carry has each one's values (checked below).
+        rows = conn.execute("SELECT d.source_uri, c.meta FROM chunks c JOIN documents d USING (doc_id) WHERE NOT EXISTS "
+                            "(SELECT 1 FROM chunk_occurrences o WHERE o.chunk_id = c.chunk_id)").fetchall()
+        shared = conn.execute("SELECT d.source_uri, c.meta FROM chunk_occurrences o JOIN chunks c USING (chunk_id) "
+                              "JOIN documents d ON d.doc_id = o.doc_id").fetchall()
         asked = conn.execute("SELECT count(*) FROM decisions "
                              "WHERE split_part(question_set, '@', 1) = 'metadata_applies'").fetchone()
     assert rows
+    for uri, meta in shared:
+        if Path(uri).name in tagged:
+            assert tagged[Path(uri).name] in meta["release"], (uri, meta)
     for uri, meta in rows:
         name = Path(uri).name
         if name in tagged:
@@ -304,6 +311,66 @@ async def test_added_documents_link_to_existing_chunks_without_changing_existing
     assert all(r[src_i] not in old_chunks or r[dst_i] not in old_chunks for r in added), "a pair of existing chunks was re-decided"
     assert any(r[status_i] == "accepted" and (r[src_i] in old_chunks) != (r[dst_i] in old_chunks) for r in added), \
         "new chunks must link to existing chunks"
+
+
+async def test_a_new_edition_reuses_its_unchanged_sections_and_carries_both_releases(
+        env: Harnessed, docs: list[Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A document repeating sections another document already has (a new release, an edition) reuses those chunks:
+    no new row, no Jev check, nothing built again, existing links untouched; each reused chunk carries both
+    documents' metadata. Only the changed section is a chunk of its own. A metadata refresh then finds nothing to fix."""
+    import yaml
+
+    from jev_graph_builder.pipeline.refresh_meta import refresh_metadata
+
+    monkeypatch.setenv(CONFIG_FILE_ENV, str(tmp_path / "jev-graph-builder.yaml"))
+    write_config(env.settings.model_dump(mode="json"))
+    pol_path = env.settings.resolved_registry() / "policies.yaml"
+    pol = yaml.safe_load(pol_path.read_text(encoding="utf-8"))
+    pol["ingest"]["metadata_fields"] = ["release"]
+    pol_path.write_text(yaml.safe_dump(pol, sort_keys=False), encoding="utf-8")
+    body = docs[0].read_text(encoding="utf-8")
+    docs[0].write_text('---\nrelease: "1.0"\n---\n' + body, encoding="utf-8")
+    src = [str(docs[0].parent)]
+
+    first = await Builder(src, None, lambda _k, _s: True, "tester", open_ctx=_opener(env)).run()
+    assert first.ok, first.stopped
+    links = "SELECT * FROM edges WHERE NOT structural ORDER BY edge_id"
+    with psycopg.connect(env.settings.dsn) as conn:
+        before = conn.execute(links).fetchall()
+        old_chunks = {r[0]: r[1] for r in conn.execute("SELECT chunk_id, doc_id FROM chunks WHERE status = 'accepted'")}
+        checks_before = len([c for c in env.fake_jev.calls if "chunk_check" in str(c)])
+
+    changed = "Ledgerd now discovers services through Beacon. Its configuration moved to the platform repository."
+    edition = docs[0].parent / "01b-ledgerd-architecture-2.md"
+    edition.write_text('---\nrelease: "2.0"\n---\n' + body.split("## Notes")[0] + "## Notes\n\n" + changed + "\n", encoding="utf-8")
+    second = await Builder(src, None, lambda _k, _s: True, "tester", open_ctx=_opener(env)).run()
+    assert second.ok, second.stopped
+
+    with psycopg.connect(env.settings.dsn) as conn:
+        (doc2,) = conn.execute("SELECT doc_id FROM documents WHERE source_uri LIKE %s", (f"%{edition.name}",)).fetchone()
+        own = conn.execute("SELECT text FROM chunks WHERE doc_id = %s", (doc2,)).fetchall()
+        reused = conn.execute("SELECT o.chunk_id, c.meta FROM chunk_occurrences o JOIN chunks c USING (chunk_id) "
+                              "WHERE o.doc_id = %s", (doc2,)).fetchall()
+        after = conn.execute(links).fetchall()
+    assert reused and all(cid in old_chunks for cid, _ in reused), "unchanged sections must reuse existing chunks"
+    assert all(meta == {"release": ["1.0", "2.0"]} for _, meta in reused), reused
+    assert own and all(changed.split(".")[0] in t for (t,) in own), own
+    assert [r for r in after if r[0] in {b[0] for b in before}] == before, "an existing link was rewritten"
+    checks_after = len([c for c in env.fake_jev.calls if "chunk_check" in str(c)])
+    assert checks_after - checks_before <= len(own), "a reused chunk was checked by Jev again"
+
+    rt = Runtime(env.settings, None, jev_transport=env.fake_jev.transport(),
+                 adapters={"claude_code": env.harness, "codex": env.harness},
+                 embedder_factory=lambda: FakeEmbedder(Registry(env.settings.resolved_registry()).profile(
+                     "embedding", env.settings.profiles.embedding)))
+    ctx = await rt.open()
+    try:
+        calls = len(env.fake_jev.calls)
+        report = await refresh_metadata(ctx, apply=False)
+    finally:
+        await rt.close()
+    assert len(env.fake_jev.calls) == calls, "the refresh never asks Jev"
+    assert report["documents_changed"] == 0 and report["chunks_changed"] == 0, report["changes"]
 
 
 class Killed(Exception):

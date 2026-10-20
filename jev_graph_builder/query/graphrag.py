@@ -60,7 +60,7 @@ async def expand(ctx: Context, query: str, seeds: list[dict[str, Any]], plan: di
              "cap": plan["max_neighbors"]})
         rows = [r for r in rows if r["to_id"] not in nodes]
         texts = {r["chunk_id"]: r for r in await ctx.db.fetch(
-            "SELECT c.chunk_id, c.doc_id, c.ord, c.title, c.text, c.heading_path, d.source_uri FROM chunks c "
+            "SELECT c.chunk_id, c.doc_id, c.ord, c.title, c.text, c.heading_path, c.meta, d.source_uri FROM chunks c "
             "JOIN documents d ON d.doc_id = c.doc_id WHERE c.chunk_id = ANY(%s) AND c.status = 'accepted' AND NOT coalesce(d.quarantined, false)",
             ([r["to_id"] for r in rows] + [r["from_id"] for r in rows],))}
 
@@ -113,7 +113,7 @@ def assemble(ctx: Context, nodes: dict[str, dict[str, Any]], communities: list[d
         used += tokens
         cid = f"{ctx.reg.policy('query.citation_prefix')}{len(passages) + 1}"
         passages[cid] = {"kind": kind, "id": ident, "text": text, "source_uri": src.get("source_uri"), "doc_id": src.get("doc_id"),
-                         "title": src.get("title"), "heading_path": src.get("heading_path")}
+                         "title": src.get("title"), "heading_path": src.get("heading_path"), "meta": src.get("meta")}
     return passages
 
 
@@ -146,7 +146,7 @@ async def context(ctx: Context, query: str, max_tokens: int | None = None,
     ranked, rerank_d = await rerank(ctx, query, hits)
     decisions.extend(rerank_d)
     seeds = [{"chunk_id": h.chunk_id, "doc_id": h.doc_id, "text": h.text, "title": h.title, "heading_path": h.heading_path,
-              "source_uri": h.source_uri} for h in ranked[: plan["k_seeds"]]]
+              "source_uri": h.source_uri, "meta": h.meta} for h in ranked[: plan["k_seeds"]]]
     nodes, edges, exp_d = await expand(ctx, query, seeds, plan)
     decisions.extend(exp_d)
     comms = await communities_for(ctx, list(nodes)) if plan.get("use_communities") else []
