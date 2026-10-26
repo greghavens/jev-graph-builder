@@ -113,6 +113,16 @@ jev-graph-builder serve --port 8080       # HTTP API
 
 Every command prints JSON on stdout. Progress and logs go to stderr.
 
+### Keeping the graph up to date
+
+When documents are added or change, pass just those files to `update`:
+
+```bash
+jev-graph-builder update --paths-file changed.txt --target cloudflare --name my-docs-mcp --allow-github-users your-login
+```
+
+It ingests them (a file at a path already in the graph replaces its old version when its text changed; one whose text didn't change costs nothing), runs every graph stage and the metadata refresh, then publishes. Existing links, entity clusters and names are never re-decided. If a stage pauses or has failed items, nothing is published and the exit code is non-zero; rerun it to resume. Without `--target` it builds but doesn't publish. Run it from a scheduler (cron, a systemd timer) after whatever fetches your documents, and wrangler needs `CLOUDFLARE_API_TOKEN` there, since `wrangler login` expires.
+
 ## Use the graph in Claude Code, Codex or OpenCode
 
 `jev-graph-builder mcp` is an MCP server with two tools:

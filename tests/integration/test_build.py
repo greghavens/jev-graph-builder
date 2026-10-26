@@ -581,3 +581,55 @@ async def test_a_stop_lets_running_extraction_finish_and_a_resume_reuses_it(
     enrich = {r["stage"]: r for r in report.phases["graph"]["stages"]}["enrich"]
     assert enrich["failed"] == 0 and not enrich["paused"], enrich
     assert jobs[0] not in [s.workspace for s in env.harness.runs[before:]], "the finished job was paid for again"
+
+
+async def test_update_builds_new_documents_end_to_end_without_changing_existing_links(
+        env: Harnessed, docs: list[Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`update`: ingest of only the given new documents, S2..S7 and the metadata refresh, unattended; the new
+    documents are built and existing links stay as they were. Rerunning with nothing new does no work."""
+    from jev_graph_builder.pipeline.update import update_graph
+
+    monkeypatch.setenv(CONFIG_FILE_ENV, str(tmp_path / "jev-graph-builder.yaml"))
+    write_config(env.settings.model_dump(mode="json"))
+    held = tmp_path / "held"
+    held.mkdir()
+    later = docs[-3:]
+    for d in later:
+        d.rename(held / d.name)
+    first = await Builder([str(docs[0].parent)], None, lambda _k, _s: True, "tester", open_ctx=_opener(env)).run()
+    assert first.ok, first.stopped
+    links = "SELECT * FROM edges WHERE NOT structural ORDER BY edge_id"
+    with psycopg.connect(env.settings.dsn) as conn:
+        before = conn.execute(links).fetchall()
+    for d in later:
+        (held / d.name).rename(d)
+
+    async with _opener(env)(env.settings, None) as ctx:
+        out = await update_graph(ctx, [str(d) for d in later])
+    assert out["ok"], out
+    assert [r["stage"] for r in out["stages"]][0] == "ingest" and all(not r["failed"] for r in out["stages"])
+    with psycopg.connect(env.settings.dsn) as conn:
+        built = conn.execute("SELECT count(DISTINCT d.doc_id) FROM documents d JOIN chunks c USING (doc_id) WHERE "
+                             "d.status = 'accepted' AND c.status = 'accepted' AND d.source_uri = ANY(%s)",
+                             ([d.resolve().as_uri() for d in later],)).fetchone()[0]
+        after = conn.execute(links).fetchall()
+    assert built == len(later)
+    assert [r for r in after if r[0] in {b[0] for b in before}] == before, "an existing link was rewritten"
+
+    async with _opener(env)(env.settings, None) as ctx:
+        again = await update_graph(ctx, [])
+    assert again["ok"] and all(r["done"] == 0 for r in again["stages"]), again
+
+    # A re-downloaded file whose bytes differ but whose text does not is already in the graph: ingest asks Jev nothing.
+    from jev_graph_builder.pipeline.common import RunOptions, run_stage
+    from jev_graph_builder.pipeline.s1_ingest import IngestStage
+
+    redownloaded = later[0]
+    redownloaded.write_bytes(redownloaded.read_bytes() + b"\n\n")
+    async with _opener(env)(env.settings, None) as ctx:
+        ctx.cache["ingest_paths"] = [str(redownloaded)]
+        calls = len(env.fake_jev.calls)
+        rep = await run_stage(ctx, IngestStage(), RunOptions())
+        sent = env.fake_jev.calls[calls:]
+    assert rep.selected == 1 and rep.done == 1, rep
+    assert sent == [], "an unchanged document was sent to Jev again"

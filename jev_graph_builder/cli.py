@@ -483,38 +483,78 @@ def refresh_metadata(apply: bool = typer.Option(False, "--apply", help="Write th
     _echo(_run(lambda ctx: refresh(ctx, apply)))
 
 
-@app.command()
-def publish(target: str = typer.Option("postgres", "--target", help="postgres | cloudflare"),
-            to: Optional[str] = typer.Option(None, "--to", envvar="JGB_PUBLISH_DSN", show_envvar=True,
-                                             help="postgres: DSN of the database the hosted server reads (keep the password out of shell history: set JGB_PUBLISH_DSN)"),
-            name: Optional[str] = typer.Option(None, "--name", help="cloudflare: Worker name (default: mcp_name setting)"),
-            allow_github_users: Optional[str] = typer.Option(None, "--allow-github-users",
-                                                             help="cloudflare: comma-separated GitHub logins allowed to sign in (default: $MCP_ALLOWED_GITHUB_USERS)")) -> None:
-    """Copy the graph to where a hosted query server reads it. postgres: loaded into `<name>_next`, the MCP sign-ins
-    carried over, then swapped in; the database it replaces stays as `<name>_prev`. cloudflare: a new D1 database and
-    Vectorize index, then the Worker is deployed pointing at them; the previous ones are kept. Both resume when rerun."""
+TargetOpt = typer.Option("postgres", "--target", help="postgres | cloudflare")
+ToOpt = typer.Option(None, "--to", envvar="JGB_PUBLISH_DSN", show_envvar=True,
+                     help="postgres: DSN of the database the hosted server reads (keep the password out of shell history: set JGB_PUBLISH_DSN)")
+NameOpt = typer.Option(None, "--name", help="cloudflare: Worker name (default: mcp_name setting)")
+AllowOpt = typer.Option(None, "--allow-github-users",
+                        help="cloudflare: comma-separated GitHub logins allowed to sign in (default: $MCP_ALLOWED_GITHUB_USERS)")
+
+
+def _check_target(target: str, to: str | None) -> None:
+    if target not in ("postgres", "cloudflare"):
+        _fail(f"--target {target!r} needs to be postgres or cloudflare")
+    if target == "postgres" and not to:
+        _fail("--target postgres needs --to (or $JGB_PUBLISH_DSN)")
+
+
+async def _publish(ctx: Context, target: str, to: str | None, name: str | None, allow_github_users: str | None) -> Any:
     from jev_graph_builder.app import migration_params
 
-    async def go(ctx: Context) -> Any:
-        if target == "cloudflare":
-            from jev_graph_builder.cloudflare.publish import publish as to_cloudflare
+    if target == "cloudflare":
+        from jev_graph_builder.cloudflare.publish import publish as to_cloudflare
 
-            return await to_cloudflare(ctx, name or ctx.settings.mcp_name, allow_github_users)
-        from jev_graph_builder.store.publish import publish as to_postgres
+        return await to_cloudflare(ctx, name or ctx.settings.mcp_name, allow_github_users)
+    from jev_graph_builder.store.publish import publish as to_postgres
 
-        if not to:
-            _fail("--target postgres needs --to (or $JGB_PUBLISH_DSN)")
-        return await to_postgres(ctx.db, migration_params(ctx.reg, ctx.settings), to, ctx.reg.policy("publish.postgres.index_memory"))
+    return await to_postgres(ctx.db, migration_params(ctx.reg, ctx.settings), to, ctx.reg.policy("publish.postgres.index_memory"))
 
+
+def _run_publishing(go: Callable[[Context], Awaitable[Any]]) -> Any:
     from jev_graph_builder.cloudflare.publish import CloudflareError
     from jev_graph_builder.store.publish import PublishError
 
-    if target not in ("postgres", "cloudflare"):
-        _fail(f"--target {target!r} needs to be postgres or cloudflare")
     try:
-        _echo(_run(go, migrate_db=False))
+        return _run(go, migrate_db=False)
     except (PublishError, CloudflareError) as exc:
         _fail(str(exc))
+
+
+@app.command()
+def publish(target: str = TargetOpt, to: Optional[str] = ToOpt, name: Optional[str] = NameOpt,
+            allow_github_users: Optional[str] = AllowOpt) -> None:
+    """Copy the graph to where a hosted query server reads it. postgres: loaded into `<name>_next`, the MCP sign-ins
+    carried over, then swapped in; the database it replaces stays as `<name>_prev`. cloudflare: a new D1 database and
+    Vectorize index, then the Worker is deployed pointing at them; the previous ones are kept. Both resume when rerun."""
+    _check_target(target, to)
+    _echo(_run_publishing(lambda ctx: _publish(ctx, target, to, name, allow_github_users)))
+
+
+@app.command()
+def update(paths: list[str] = typer.Argument(None, help="New or changed document files"),
+           paths_file: Optional[Path] = typer.Option(None, "--paths-file", help="A file listing document paths, one per line"),
+           target: Optional[str] = typer.Option(None, "--target", help="Publish afterwards: postgres | cloudflare (default: don't publish)"),
+           to: Optional[str] = ToOpt, name: Optional[str] = NameOpt, allow_github_users: Optional[str] = AllowOpt) -> None:
+    """Bring the graph up to date with new or changed documents, unattended: S1 ingest of the given paths, S2..S7,
+    the metadata refresh, then (with --target) publish. Documents whose path is already in the graph replace their
+    old version when their text changed. Nothing is published unless every stage finished with no failed items;
+    the exit code is non-zero then, and rerunning resumes."""
+    from jev_graph_builder.pipeline.update import update_graph
+
+    docs = list(paths or [])
+    if paths_file:
+        docs += [line.strip() for line in paths_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if target:
+        _check_target(target, to)
+
+    result = _run(lambda ctx: update_graph(ctx, docs))
+    if not result["ok"]:
+        _echo(result)
+        _fail("a stage paused or had failed items; nothing was published. Rerun to resume.")
+    if target:
+        result["publish"] = _run_publishing(lambda ctx: _publish(ctx, target, to, name, allow_github_users))
+    _echo(result)
+
 
 if __name__ == "__main__":  # pragma: no cover
     sys.exit(app())
